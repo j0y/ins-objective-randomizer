@@ -13,11 +13,32 @@ cp -r release/addons release/presets  /path/to/insurgency/
 It needs **Metamod:Source and SourceMod already installed** on the server; it
 ships neither.
 
+## SourceMod 1.11.0.6919 or newer, and check this first
+
+The layout plugin rewrites the entity lump through SourceMod's `EntityLump` API,
+which arrived in **1.12.0.6922** on the development branch and was backported to
+stable as **1.11.0.6919**. Anything older does not have those natives, and the
+plugin will not load. What that looks like in the log is one line naming
+whichever native was reached first:
+
+```
+[SM] Native "EntityLumpEntry.FindKey" was not found
+```
+
+That is a SourceMod too old to run this — not a broken install, not a bad
+`.smx`, and not a platform problem. `sm version` at the console says what you
+have; 1.12 is stable now and is the easy answer.
+
+Everything else the *layout* plugin uses is core SourceMod, resolved by name, so
+it needs no gamedata and nothing has to be re-signed after a game update. The
+gamedata shipped here is for the survey plugin, which is the one that reads the
+nav mesh out of the server binary.
+
 | | |
 |---|---|
 | `addons/sourcemod/plugins/mapmaker_layout.smx` | auto-loads. Rewrites objective and spawn placement at map init, rotating a map's presets. |
 | `addons/sourcemod/plugins/disabled/mapmaker_survey.smx` | **not** loaded. Only wanted for a survey run — it changelevels the server when it is done. `sm plugins load disabled/mapmaker_survey` to use it. |
-| `addons/sourcemod/gamedata/mapmaker.txt` | the nav-mesh symbol lookups both plugins need. |
+| `addons/sourcemod/gamedata/mapmaker.txt` | the nav-mesh symbol lookups the **survey** plugin needs. The layout plugin does not read it. |
 | `presets/<map>.cfg` | one file per map. The layout plugin reads `presets/<GetCurrentMap()>.cfg`; a map with no file here loads stock. |
 | `BUILD.txt` | which sources the committed `.smx` files were built from. |
 

@@ -21,11 +21,13 @@ and one preset per map, laid out as an `insurgency/` directory.
 cp -r release/addons release/presets /path/to/insurgency/
 ```
 
-It needs Metamod:Source and SourceMod already there, and nothing else — no
-Python, no Docker, no survey run. Clients join stock; the `.bsp` on disk is
-never touched, so a workshop map stays the subscriber's map and there is nothing
-to download. `release/README.md` is the operator's documentation: the cvars, the
-`sm_preset` command, and why a layout takes effect on the *next* map load.
+It needs Metamod:Source and **SourceMod 1.11.0.6919 or newer** — the build that
+backported the `EntityLump` API the applier rewrites the lump through — and
+nothing else: no Python, no Docker, no survey run. Clients join stock; the
+`.bsp` on disk is never touched, so a workshop map stays the subscriber's map
+and there is nothing to download. `release/README.md` is the operator's
+documentation: the cvars, the `sm_preset` command, why a layout takes effect on
+the *next* map load, and what an older SourceMod looks like when it fails.
 
 117 maps have presets, over the 146 checkpoint maps of the server list this was
 built against. Of the rest, 7 are refused by the generator's gates and 22 have
