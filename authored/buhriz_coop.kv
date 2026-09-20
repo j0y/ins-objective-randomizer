@@ -1,0 +1,524 @@
+// draft - tools/author-sites.py buhriz_coop, from surveys/buhriz_coop.json.
+// Read it against the plan and edit it by hand; nothing here is a decision
+// the map was asked about.
+// 14 candidate sites. Each carries one defend arrangement,
+// whose sector is still unauthored - "0 360" is a placeholder for a real
+// per-door arc - and one stage arrangement per direction the chain can
+// leave the site in, whose sector *is* derived: it is the arc of onward
+// path bearings that arrangement was placed for.
+//
+// Spawn areas that overlap, and so must never appear in one chain: s01+s10, s01+s13, s02+s09, s03+s07, s04+s08, s06+s12, s07+s10, s07+s13, s10+s13
+"authored"
+{
+	"map"     "buhriz_coop"
+	"survey"  "surveys/buhriz_coop.json"
+
+	"site"
+	{
+		"name"    "s01-place9"
+		"slot"    "any"
+		"at"      "area 8208"        // 1850 7850 145
+		"note"    "place 9, 4 exits, 100,000 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cp3 at 1774 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 10335 0"
+			"box"     "904 5466 -200  2696 7258 440"
+			"note"    "55 hull-valid coordinates at 96 u separation (91 areas in the box), 1488 u from the site at bearing 268 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "213 303"        // onward to s04 s06 s08 s09 s10 s11 s12 s03 s13 s02 s05 s07 s14
+			"anchor"  "area 8328 0"
+			"box"     "1666 7004 -323  3458 8796 317"
+			"note"    "23 hull-valid coordinates at 96 u separation (30 areas in the box), 714 u back at bearing 4 deg, 74 deg off directly behind; legs served 3025-21122 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s02-place23"
+		"slot"    "any"
+		"at"      "area 8556"        // -225 -712 50
+		"note"    "place 23, 5 exits, 58,750 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cachepoint_b at 1539 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 9742 0"
+			"box"     "-2328 -840 -273  -1048 440 239"
+			"note"    "37 hull-valid coordinates at 96 u separation (43 areas in the box), 1550 u from the site at bearing 161 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "284 314"        // onward to s05
+			"anchor"  "area 5253 0"
+			"box"     "-630 108 16  330 1068 400"
+			"note"    "24 hull-valid coordinates at 96 u separation (31 areas in the box), 1302 u back at bearing 87 deg, 32 deg off directly behind; legs served 5519-5519 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "25 89"        // onward to s14 s01 s07 s11
+			"anchor"  "area 9717 0"
+			"box"     "-2002 -1840 -240  -722 -560 272"
+			"note"    "23 hull-valid coordinates at 96 u separation (25 areas in the box), 1238 u back at bearing 203 deg, 34 deg off directly behind; legs served 2984-10290 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "109 139"        // onward to s03 s09 s10 s13
+			"anchor"  "area 4496 0"
+			"box"     "-78 -2302 -501  1202 -1022 11"
+			"note"    "20 hull-valid coordinates at 96 u separation (21 areas in the box), 1234 u back at bearing 310 deg, 6 deg off directly behind; legs served 3884-9798 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "180 210"        // onward to s04 s06 s08 s12
+			"anchor"  "area 9479 0"
+			"box"     "482 20 -406  1442 980 -22"
+			"note"    "20 hull-valid coordinates at 96 u separation (30 areas in the box), 1697 u back at bearing 46 deg, 30 deg off directly behind; legs served 4772-12231 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s03-place3"
+		"slot"    "any"
+		"at"      "area 5755"        // 1850 2988 -26
+		"note"    "place 3, 6 exits, 103,750 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cachepoint_b at 2774 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 5886 0"
+			"box"     "685 3222 -287  1965 4502 225"
+			"note"    "34 hull-valid coordinates at 96 u separation (43 areas in the box), 1020 u from the site at bearing 121 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "148 212"        // onward to s01 s07 s10 s13 s02 s04 s05 s06 s08 s09 s11 s12 s14
+			"anchor"  "area 7198 0"
+			"box"     "1592 1142 -473  3384 2934 167"
+			"note"    "25 hull-valid coordinates at 96 u separation (29 areas in the box), 1144 u back at bearing 304 deg, 56 deg off directly behind; legs served 3632-16630 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s04-place29"
+		"slot"    "any"
+		"at"      "area 2024"        // -4388 -3725 79
+		"note"    "place 29, 3 exits, 111,250 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cp6 at 1829 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 78 0"
+			"box"     "-4328 -3515 -217  -3048 -2235 295"
+			"note"    "39 hull-valid coordinates at 96 u separation (50 areas in the box), 1101 u from the site at bearing 51 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "231 261"        // onward to s06 s12
+			"anchor"  "area 304 0"
+			"box"     "-4068 -3392 -149  -3108 -2432 235"
+			"note"    "26 hull-valid coordinates at 96 u separation (35 areas in the box), 1140 u back at bearing 45 deg, 21 deg off directly behind; legs served 3288-6632 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "295 369"        // onward to s08 s05 s14
+			"anchor"  "area 407 0"
+			"box"     "-5371 -3058 -124  -3579 -1266 516"
+			"note"    "22 hull-valid coordinates at 96 u separation (23 areas in the box), 1565 u back at bearing 93 deg, 59 deg off directly behind; legs served 4220-8673 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "55 85"        // onward to s01 s02 s03 s07 s09 s10 s11 s13
+			"anchor"  "area 8986 0"
+			"box"     "-5292 -5630 -60  -4332 -4670 324"
+			"note"    "21 hull-valid coordinates at 96 u separation (54 areas in the box), 1487 u back at bearing 253 deg, 3 deg off directly behind; legs served 6077-14689 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s05-place16"
+		"slot"    "any"
+		"at"      "area 2767"        // -50 -5662 -221
+		"note"    "place 16, 3 exits, 186,250 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cp1 at 1705 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 3540 0"
+			"box"     "-1934 -5746 -485  -142 -3954 155"
+			"note"    "35 hull-valid coordinates at 96 u separation (45 areas in the box), 1279 u from the site at bearing 141 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "63 109"        // onward to s01 s07 s11 s13 s14 s02 s03 s09 s10
+			"anchor"  "area 3308 0"
+			"box"     "-1996 -7558 -546  -204 -5766 94"
+			"note"    "25 hull-valid coordinates at 96 u separation (30 areas in the box), 1450 u back at bearing 224 deg, 43 deg off directly behind; legs served 5849-14527 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "133 163"        // onward to s04 s08 s12
+			"anchor"  "area 5104 0"
+			"box"     "-1134 -7134 -372  658 -5342 268"
+			"note"    "22 hull-valid coordinates at 96 u separation (29 areas in the box), 605 u back at bearing 252 deg, 76 deg off directly behind; legs served 5433-6956 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "219 249"        // onward to s06
+			"anchor"  "area 2928 0"
+			"box"     "-821 -5346 -556  971 -3554 84"
+			"note"    "29 hull-valid coordinates at 96 u separation (38 areas in the box), 1219 u back at bearing 84 deg, 30 deg off directly behind; legs served 9707-9707 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s06-place37"
+		"slot"    "any"
+		"at"      "area 10238"        // -7575 -6325 144
+		"note"    "place 37, 2 exits, 128,125 u^2 of hull-valid floor within 384 u, indoor; nearest shipped objective cachepoint_g at 256 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 1164 0"
+			"box"     "-7184 -6908 -208  -5392 -5116 432"
+			"note"    "44 hull-valid coordinates at 96 u separation (76 areas in the box), 1325 u from the site at bearing 14 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "52 82"        // onward to s02 s03 s04 s05 s07 s08 s09 s10 s11 s12 s13 s14 s01
+			"anchor"  "area 586 0"
+			"box"     "-6615 -8028 -229  -5335 -6748 283"
+			"note"    "20 hull-valid coordinates at 96 u separation (24 areas in the box), 1921 u back at bearing 326 deg, 80 deg off directly behind; legs served 3178-20665 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s07-place15"
+		"slot"    "any"
+		"at"      "area 9808"        // 3150 3088 -232
+		"note"    "place 15, 2 exits, 106,250 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cp3 at 3486 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 5320 0"
+			"box"     "1029 3216 -351  2821 5008 289"
+			"note"    "46 hull-valid coordinates at 96 u separation (55 areas in the box), 1597 u from the site at bearing 140 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "119 149"        // onward to s01 s03 s09 s10 s13
+			"anchor"  "area 5151 0"
+			"box"     "1979 1042 -560  3771 2834 80"
+			"note"    "20 hull-valid coordinates at 96 u separation (24 areas in the box), 1182 u back at bearing 257 deg, 58 deg off directly behind; legs served 4749-7183 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "226 275"        // onward to s02 s04 s08 s11 s05 s06 s12 s14
+			"anchor"  "area 7364 0"
+			"box"     "2292 3866 -555  4084 5658 85"
+			"note"    "28 hull-valid coordinates at 96 u separation (30 areas in the box), 1675 u back at bearing 89 deg, 18 deg off directly behind; legs served 3362-17413 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s08-place27"
+		"slot"    "any"
+		"at"      "area 747"        // -2100 -4012 240
+		"note"    "place 27, 2 exits, 308,750 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cp5 at 1490 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 1268 0"
+			"box"     "-3940 -3615 -203  -2660 -2335 309"
+			"note"    "37 hull-valid coordinates at 96 u separation (52 areas in the box), 1586 u from the site at bearing 139 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "80 110"        // onward to s01 s02 s03 s07 s09 s10 s11 s13 s14
+			"anchor"  "area 514 0"
+			"box"     "-3508 -5908 -246  -1716 -4116 394"
+			"note"    "34 hull-valid coordinates at 96 u separation (44 areas in the box), 1124 u back at bearing 243 deg, 32 deg off directly behind; legs served 4772-13815 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "226 289"        // onward to s04 s06 s12 s05
+			"anchor"  "area 1794 0"
+			"box"     "-3302 -3078 -29  -2022 -1798 483"
+			"note"    "24 hull-valid coordinates at 96 u separation (29 areas in the box), 1672 u back at bearing 110 deg, 32 deg off directly behind; legs served 4164-8102 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s09-place2"
+		"slot"    "any"
+		"at"      "area 5781"        // -1975 1700 178
+		"note"    "place 2, 3 exits, 190,625 u^2 of hull-valid floor within 384 u, indoor; nearest shipped objective cp4 at 188 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 4754 0"
+			"box"     "-2528 -315 -258  -1248 965 254"
+			"note"    "42 hull-valid coordinates at 96 u separation (53 areas in the box), 1378 u from the site at bearing 274 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "218 280"        // onward to s04 s06 s08 s12 s05
+			"anchor"  "area 5249 0"
+			"box"     "-1865 1622 -68  -585 2902 444"
+			"note"    "27 hull-valid coordinates at 96 u separation (35 areas in the box), 938 u back at bearing 37 deg, 32 deg off directly behind; legs served 6416-13296 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "10 40"        // onward to s02 s03 s11 s14
+			"anchor"  "area 5430 0"
+			"box"     "-3471 -221 -319  -1679 1571 321"
+			"note"    "43 hull-valid coordinates at 96 u separation (54 areas in the box), 1188 u back at bearing 240 deg, 35 deg off directly behind; legs served 3258-6500 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "72 102"        // onward to s01 s07 s10 s13
+			"anchor"  "area 9845 0"
+			"box"     "-2730 -518 -172  -1770 442 212"
+			"note"    "31 hull-valid coordinates at 96 u separation (36 areas in the box), 1759 u back at bearing 261 deg, 6 deg off directly behind; legs served 5089-8500 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s10-place12"
+		"slot"    "any"
+		"at"      "area 5250"        // -125 5325 210
+		"note"    "place 12, 5 exits, 145,625 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cp3 at 1839 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 8734 0"
+			"box"     "522 4998 -158  1802 6278 354"
+			"note"    "43 hull-valid coordinates at 96 u separation (87 areas in the box), 1325 u from the site at bearing 14 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "264 346"        // onward to s02 s04 s05 s06 s08 s09 s11 s12 s03 s07 s14
+			"anchor"  "area 10315 0"
+			"box"     "632 5932 -90  1592 6892 294"
+			"note"    "20 hull-valid coordinates at 96 u separation (30 areas in the box), 1647 u back at bearing 41 deg, 83 deg off directly behind; legs served 3601-17912 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "27 83"        // onward to s13 s01
+			"anchor"  "area 7702 0"
+			"box"     "-1058 2766 -352  734 4558 288"
+			"note"    "31 hull-valid coordinates at 96 u separation (48 areas in the box), 1663 u back at bearing 269 deg, 34 deg off directly behind; legs served 3077-3438 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s11-place0"
+		"slot"    "any"
+		"at"      "area 6690"        // -138 1112 48
+		"note"    "place 0, 4 exits, 223,750 u^2 of hull-valid floor within 384 u, indoor; nearest shipped objective cachepoint_b at 1183 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 6777 0"
+			"box"     "-1852 1135 -231  -572 2415 281"
+			"note"    "32 hull-valid coordinates at 96 u separation (41 areas in the box), 1263 u from the site at bearing 148 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "128 158"        // onward to s01 s03 s09 s10 s13
+			"anchor"  "area 9476 0"
+			"box"     "308 108 -340  1268 1068 44"
+			"note"    "21 hull-valid coordinates at 96 u separation (30 areas in the box), 1064 u back at bearing 330 deg, 8 deg off directly behind; legs served 3258-8986 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "194 224"        // onward to s04 s05 s06 s08 s12
+			"anchor"  "area 7568 0"
+			"box"     "435 660 -207  1715 1940 305"
+			"note"    "24 hull-valid coordinates at 96 u separation (36 areas in the box), 1227 u back at bearing 9 deg, 20 deg off directly behind; legs served 7180-14639 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "251 281"        // onward to s02 s07 s14
+			"anchor"  "area 9383 0"
+			"box"     "-518 2220 -215  442 3180 169"
+			"note"    "22 hull-valid coordinates at 96 u separation (25 areas in the box), 1591 u back at bearing 86 deg, 0 deg off directly behind; legs served 3609-6683 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s12-place38"
+		"slot"    "any"
+		"at"      "area 9049"        // -4988 -5662 195
+		"note"    "place 38, 4 exits, 57,500 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cp6 at 1398 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 8916 0"
+			"box"     "-6808 -6846 -221  -5016 -5054 419"
+			"note"    "48 hull-valid coordinates at 96 u separation (90 areas in the box), 969 u from the site at bearing 197 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "173 203"        // onward to s06
+			"anchor"  "area 8853 0"
+			"box"     "-4665 -6152 -207  -3385 -4872 305"
+			"note"    "30 hull-valid coordinates at 96 u separation (60 areas in the box), 974 u back at bearing 9 deg, 1 deg off directly behind; legs served 3848-3848 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "301 331"        // onward to s01 s02 s03 s04 s05 s07 s08 s09 s10 s11 s13 s14
+			"anchor"  "area 10178 0"
+			"box"     "-6778 -6040 -82  -5498 -4760 430"
+			"note"    "23 hull-valid coordinates at 96 u separation (47 areas in the box), 1180 u back at bearing 167 deg, 31 deg off directly behind; legs served 3288-17872 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s13-place10"
+		"slot"    "any"
+		"at"      "area 10258"        // 825 5912 416
+		"note"    "place 10, 2 exits, 113,686 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cp3 at 735 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 8717 0"
+			"box"     "985 4798 -220  2265 6078 292"
+			"note"    "38 hull-valid coordinates at 96 u separation (72 areas in the box), 930 u from the site at bearing 329 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "269 350"        // onward to s02 s03 s04 s06 s08 s09 s10 s11 s12 s05 s07 s14 s01
+			"anchor"  "area 5846 0"
+			"box"     "-146 5916 -179  1646 7708 461"
+			"note"    "29 hull-valid coordinates at 96 u separation (45 areas in the box), 903 u back at bearing 95 deg, 35 deg off directly behind; legs served 3025-19187 u"
+		}
+	}
+
+	"site"
+	{
+		"name"    "s14-place14"
+		"slot"    "any"
+		"at"      "area 6010"        // 2250 -62 -183
+		"note"    "place 14, 3 exits, 93,750 u^2 of hull-valid floor within 384 u, outdoor; nearest shipped objective cachepoint_b at 1522 u"
+
+		"arrangement"
+		{
+			"role"    "defend"
+			"sector"  "0 360"        // unauthored: any bearing
+			"anchor"  "area 10498 0"
+			"box"     "472 322 -344  1752 1602 168"
+			"note"    "31 hull-valid coordinates at 96 u separation (51 areas in the box), 1531 u from the site at bearing 138 deg"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "54 84"        // onward to s01 s07 s10 s13
+			"anchor"  "area 3631 0"
+			"box"     "616 -2146 -470  2408 -354 170"
+			"note"    "28 hull-valid coordinates at 96 u separation (32 areas in the box), 1398 u back at bearing 238 deg, 11 deg off directly behind; legs served 3362-8369 u"
+		}
+
+		"arrangement"
+		{
+			"role"    "stage"
+			"sector"  "185 270"        // onward to s03 s09 s11 s02 s04 s08 s05 s06 s12
+			"anchor"  "area 6333 0"
+			"box"     "1742 379 -564  3534 2171 76"
+			"note"    "21 hull-valid coordinates at 96 u separation (25 areas in the box), 1393 u back at bearing 74 deg, 26 deg off directly behind; legs served 2984-14310 u"
+		}
+	}
+
+}

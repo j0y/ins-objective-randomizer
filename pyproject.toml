@@ -1,0 +1,18 @@
+[project]
+name = "mapmaker-workspace"
+version = "0.1.0"
+description = "Insurgency map generation: author VMFs from existing assets, verify against compiled BSPs"
+requires-python = ">=3.12"
+dependencies = [
+    "bspscout",
+    "mapmaker",
+    "navlayout",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+bspscout = { workspace = true }
+mapmaker = { workspace = true }
+navlayout = { workspace = true }

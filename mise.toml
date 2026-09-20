@@ -1,0 +1,220 @@
+# mapmaker — move where an Insurgency map's objectives and spawns are, and
+# analyse maps well enough to decide where they should go.
+#
+#   packages/bspscout  reads and measures *compiled* maps (.bsp). Works today,
+#                      needs nothing but a .bsp file. The analysis engine.
+#   plugin/            SourceMod: surveys the running map, applies layouts at
+#                      load. Needs a modded server; see plugin/README.md.
+#   tools/movespawns   patches the entity lump in a shipped .bsp. No plugin,
+#                      no recompile, runs on a vanilla server.
+#
+# The loop this repo exists to close:
+#   survey in game -> analyse offline against distributions calibrated from the
+#   official maps -> apply at load -> play it -> adjust -> repeat.
+# README.md is that loop; docs/layout-variants.md is the long version.
+#
+# The map-*generation* tasks below (gen, loop, remix, compile, decompile) are
+# parked, not broken. They need the Steam install and the Windows SDK tools
+# under Wine; docs/toolchain.md is that side.
+
+[tools]
+python = "3.12"
+uv = "latest"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+# Steam install root. Symlink game/ at it, or point this elsewhere.
+INS = "{{config_root}}/game"
+# Map under analysis. This is only the *fallback*: setting BSP in [env] would
+# clobber the caller's variable, so the tasks below read ${BSP:-$BSP_DEFAULT}
+# and an override works as documented:
+#   BSP=maps/build/test_room.bsp mise run scout
+BSP_DEFAULT = "{{config_root}}/maps/official/ministry.bsp"
+# Where nav caches land; one is ~250 MB, so not in out/.
+CACHE = "{{config_root}}/cache"
+OUT = "{{config_root}}/out"
+
+[tasks.setup]
+description = "Install both packages into the venv"
+run = "uv sync"
+
+# ---------------------------------------------------------------- analyse
+[tasks.info]
+description = "Dump lumps, entities, bounds of $BSP"
+run = 'python -m bspscout info "${BSP:-$BSP_DEFAULT}"' 
+
+[tasks.build]
+description = "Parse $BSP -> walkability cache in cache/"
+run = """
+bsp="${BSP:-$BSP_DEFAULT}"; name=$(basename "$bsp" .bsp)
+python -m bspscout build "$bsp" --res 16 --out $CACHE/$name.npz
+"""
+
+[tasks.render]
+description = "Overview / height / per-storey plans for the cached map"
+run = """
+bsp="${BSP:-$BSP_DEFAULT}"; name=$(basename "$bsp" .bsp)
+python -m bspscout render $CACHE/$name.npz --outdir $OUT/$name
+"""
+
+[tasks.objectives]
+description = "Suggest capture-point locations for the cached map"
+run = """
+bsp="${BSP:-$BSP_DEFAULT}"; name=$(basename "$bsp" .bsp)
+python -m bspscout objectives $CACHE/$name.npz --bsp "$bsp" --outdir $OUT/$name
+"""
+
+[tasks.scout]
+description = "build + render + objectives + sight for $BSP, in order"
+run = """
+bsp="${BSP:-$BSP_DEFAULT}"; name=$(basename "$bsp" .bsp)
+python -m bspscout build "$bsp" --res 16 --out $CACHE/$name.npz
+python -m bspscout render $CACHE/$name.npz --outdir $OUT/$name
+python -m bspscout objectives $CACHE/$name.npz --bsp "$bsp" --outdir $OUT/$name
+python -m bspscout sight $CACHE/$name.npz --bsp "$bsp" --outdir $OUT/$name
+"""
+
+[tasks.check]
+description = "Verify the segment tracer against brute force on real maps"
+run = "python tools/check-trace.py"
+
+[tasks.sight]
+description = "Sightlines, exposure, cover and objective asymmetry for the cached map"
+run = """
+bsp="${BSP:-$BSP_DEFAULT}"; name=$(basename "$bsp" .bsp)
+python -m bspscout sight $CACHE/$name.npz --bsp "$bsp" --outdir $OUT/$name
+"""
+
+[tasks.corpus]
+description = "scout every official map (mise run corpus -- --base -j 4). Bounded: all 49 at once is ~70 GB and takes the machine down"
+run = "tools/scout-corpus.sh"
+
+[tasks.metrics]
+description = "Measure the checkpoint (_coop) maps -> docs/corpus.md. SCOPE=base|coop|all"
+run = """
+scope="${SCOPE:-coop}"
+if [ "$scope" = "coop" ]; then
+  # The 13 _coop maps are the checkpoint layouts, and objective siting and spawn
+  # geography - most of what these metrics measure - are what a mode changes.
+  python -m mapmaker.metrics extract $(cd maps/official && ls *_coop.bsp)
+else
+  python -m mapmaker.metrics extract
+fi
+python -m mapmaker.metrics summary --scope "$scope" --md docs/corpus.md \
+  --json $CACHE/metrics/summary.json
+"""
+
+[tasks.compare]
+description = "Read one map against the checkpoint corpus (MAP=duplex mise run compare)"
+run = """
+name="${MAP:-duplex}"
+python -m mapmaker.metrics compare "$name" --scope "${SCOPE:-coop}" --md $OUT/$name/corpus.md
+"""
+
+# ---------------------------------------------------------------- author
+[tasks.gen]
+description = "Write a generated .vmf into maps/build/ (mise run gen -- duplex)"
+run = "python -m mapmaker.cli"
+
+[tasks.loop]
+description = "Write, compile and measure one generated map (MAP=duplex mise run loop)"
+run = """
+name="${MAP:-room}"
+python -m mapmaker.cli "$name"
+tools/compile-map.sh maps/build/$name.vmf
+python -m bspscout build maps/build/$name.bsp --res 16 --out $CACHE/$name.npz
+python -m bspscout render $CACHE/$name.npz --outdir $OUT/$name
+python -m bspscout objectives $CACHE/$name.npz --bsp maps/build/$name.bsp --outdir $OUT/$name
+python -m mapmaker.metrics compare "$name" --md $OUT/$name/corpus.md
+"""
+
+# ---------------------------------------------------------------- toolchain
+[tasks.game]
+description = "Download the Insurgency asset kit + official maps (anonymous, no Steam account)"
+run = "tools/fetch-game.sh"
+
+[tasks.tools]
+description = "Download VBSP++/VVIS++/VRAD++ into vendor/plusplus/ (free, no account)"
+run = "tools/fetch-tools.sh"
+
+[tasks.bspsrc]
+description = "Download BSPSource into vendor/bspsrc/ - decompiler, for reference and remixing"
+run = "tools/fetch-bspsrc.sh"
+
+[tasks.maps]
+description = "Copy the shipped .bsp files out of the install into maps/official/"
+run = "tools/collect-maps.sh"
+
+[tasks.decompile]
+description = "BSPSource a map to an editable .vmf in maps/ref/ (mise run decompile -- ministry)"
+run = "tools/decompile-map.sh"
+
+[tasks.remix]
+description = "Cut a shipped map, move a half, reseal, compile and measure (MAP=ministry AT=512 mise run remix)"
+run = """
+name="${MAP:-ministry}"
+[ -f maps/ref/${name}_np.vmf ] || tools/decompile-map.sh --splice-ready "$name"
+python -m mapmaker.cli splice maps/ref/${name}_np.vmf \
+  --axis "${AXIS:-x}" --at "${AT:?set AT to the cut plane}" \
+  --gap "${GAP:-1024}" --slide "${SLIDE:-0}" --joins "${JOINS:-4}"
+plan=maps/build/${name}_splice.plan.json
+python tools/check-splice.py maps/ref/${name}_np.vmf maps/build/${name}_splice.vmf --plan $plan
+tools/compile-map.sh maps/build/${name}_splice.vmf
+python -m mapmaker.cli cubemaps maps/official/${name}.bsp maps/build/${name}_splice.bsp --plan $plan
+python -m bspscout build maps/build/${name}_splice.bsp --res 16 --out $CACHE/${name}_splice.npz
+python -m bspscout render $CACHE/${name}_splice.npz --outdir $OUT/${name}_splice
+python -m bspscout objectives $CACHE/${name}_splice.npz --bsp maps/build/${name}_splice.bsp --outdir $OUT/${name}_splice
+"""
+
+[tasks.compile]
+description = "vbsp/vvis/vrad a .vmf under Wine in a container (mise run compile -- maps/build/test_room.vmf)"
+run = "tools/compile-map.sh"
+
+[tasks.archive]
+description = "Pack the git-tracked source into out/mapmaker-<date>-<sha>.tar.gz (mise run archive -- --format zip)"
+run = "tools/make-archive.sh"
+
+# ---------------------------------------------------------------- layouts
+# Stage A (survey) and stage C (apply) of docs/layout-variants.md. Both want a
+# modded server, which is the trade that document makes in exchange for never
+# patching a .bsp: clients join stock and a workshop map is left alone.
+
+[tasks.sourcemod]
+description = "Install Metamod:Source + SourceMod into game/insurgency/addons"
+run = "tools/fetch-sourcemod.sh"
+
+[tasks.plugins]
+description = "Compile plugin/scripting/*.sp -> plugin/build/*.smx, install them, refresh release/"
+run = "tools/build-plugins.sh"
+
+[tasks.subscribe]
+description = "Download workshop items by file ID, anonymously (mise run subscribe -- --list). Default list: serverconfig/subscribed_file_ids.txt"
+run = "tools/fetch-workshop.sh"
+
+[tasks.workshop]
+description = "Install workshop maps into the game tree and mount their content by file ID (mise run workshop -- --mount --ids <list>)"
+run = "tools/workshop-maps.sh"
+
+[tasks.survey]
+description = "Dump the engine's nav graph + hull validity per map (mise run survey -- --coop)"
+run = "tools/survey.sh"
+
+[tasks.surveyall]
+description = "Survey every installed map that has no usable survey, restarting after a map that kills the server (mise run surveyall -- --cycle serverconfig/mapcycle_checkpoint.txt)"
+run = "tools/survey-all.sh"
+
+[tasks.presets]
+description = "Write each map's layout preset, reversal or family by what the map is (mise run presets -- ministry_coop)"
+run = "tools/make-presets.sh"
+
+[tasks.play]
+description = "Run the layout server (MAP=ministry_coop mise run play; MM_LAYOUT_ENABLED=0 for the stock control)"
+run = 'tools/layout-server.sh "${MAP:-ministry_coop}"'
+
+[tasks.serve]
+description = "Run the layout server over a whole mapcycle instead of one map (CYCLE=serverconfig/mapcycle_checkpoint.txt mise run serve)"
+run = 'tools/layout-server.sh --cycle "${CYCLE:-serverconfig/mapcycle_checkpoint.txt}"'
+
+[tasks.checklayout]
+description = "Load a map, rotate its presets, and report what the engine said (MAP=ministry_coop ROUNDS=1 mise run checklayout)"
+run = 'tools/check-layout.sh --rounds "${ROUNDS:-1}" "${MAP:-ministry_coop}"'

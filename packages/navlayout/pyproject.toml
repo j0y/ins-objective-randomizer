@@ -1,0 +1,23 @@
+[project]
+name = "navlayout"
+version = "0.1.0"
+description = "Read an in-game nav survey, measure how open a map is, and site objectives and spawns on it"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.1",
+    "scipy>=1.14",
+    "bspscout",
+]
+
+[project.scripts]
+navlayout = "navlayout.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/navlayout"]
+
+[tool.uv.sources]
+bspscout = { workspace = true }

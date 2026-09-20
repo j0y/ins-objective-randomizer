@@ -1,0 +1,23 @@
+[project]
+name = "mapmaker"
+version = "0.1.0"
+description = "Author Source-engine VMFs from an existing asset kit, and drive the compile/verify loop"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.1",
+    "pillow>=11",
+    "bspscout",
+]
+
+[project.scripts]
+mapmaker = "mapmaker.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mapmaker"]
+
+[tool.uv.sources]
+bspscout = { workspace = true }

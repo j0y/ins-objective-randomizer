@@ -1,0 +1,30 @@
+__pycache__/
+.venv/
+*.egg-info/
+
+# third-party binaries (BSPSource, SDK tools) - fetched, not vendored
+vendor/
+# symlink or copy of the Steam install
+game/
+# regenerable analysis caches (nav.npz is ~250 MB per map)
+cache/
+# renders, metric reports, calibration output
+out/
+# copies of shipped maps, decompiled references, compiled output
+maps/official/
+maps/ref/
+maps/build/
+
+# compiled SourcePawn - build scratch. The publishable copy of the same .smx
+# is committed under release/, refreshed by tools/build-plugins.sh.
+plugin/build/
+# survey JSON is regenerable from a server run and is megabytes per map
+surveys/
+
+# vendored map data is small and needed by tools/placespawns.py — keep data/
+
+# a server's own config, dropped in to be reproduced here: its subscription
+# list and its mapcycle. Someone else's server and someone else's map list, so
+# it stays local - the tools read it by path and nothing in the repo needs it
+# committed.
+serverconfig/

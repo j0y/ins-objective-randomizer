@@ -1,0 +1,127 @@
+# Containerised toolchain.
+#
+# Nothing here is installed on the host: the Steam downloads, the Windows SDK
+# compile tools and the decompiler all run in containers with the repo
+# bind-mounted at /work. Paths inside a container therefore mirror the repo -
+# /work/game is game/, /work/maps/build is maps/build - which keeps the shell
+# wrappers in tools/ readable.
+#
+# The Python side (bspscout, mapmaker) deliberately stays on the host: mise
+# already owns that venv, and containerising it would mean two competing
+# environment managers for no gain.
+#
+#   docker compose -f docker/compose.yml build
+#   docker compose -f docker/compose.yml run --rm depotdl -app 237410 ...
+#
+# Prefer the tools/ wrappers over calling these directly.
+name: mapmaker
+
+# Everything runs as the invoking user, so downloaded content and compiled
+# maps are owned by you rather than by root.
+x-work: &work
+  working_dir: /work
+  user: "${MM_UID:-1000}:${MM_GID:-1000}"
+  volumes:
+    - ..:/work
+
+services:
+  # Steam depot fetch - anonymous for the dedicated-server content, with a
+  # login for the client depot that carries the compile tools.
+  depotdl:
+    <<: *work
+    build:
+      context: .
+      dockerfile: depotdl.Dockerfile
+    image: mapmaker/depotdl
+    # DepotDownloader keeps its manifest cache and login token under $HOME.
+    environment:
+      HOME: /work/cache/depotdl
+    # A Steam Guard prompt needs a TTY; harmless when the run is unattended.
+    stdin_open: true
+    tty: true
+
+  # vbsp / vvis / vrad under Wine. See wine.Dockerfile.
+  wine:
+    <<: *work
+    build:
+      context: .
+      dockerfile: wine.Dockerfile
+    image: mapmaker/wine
+    environment:
+      HOME: /work/cache/wine
+      WINEPREFIX: /work/cache/wine/prefix
+
+  # BSPSource decompiler: plain JVM, no Wine. The jar is vendored rather than
+  # baked in, so vendor/bspsrc/bspsrc.jar must exist - tools/decompile-map.sh
+  # fetches it on first use.
+  bspsrc:
+    <<: *work
+    image: eclipse-temurin:21-jre
+    entrypoint: ["java", "-jar", "/work/vendor/bspsrc/bspsrc.jar"]
+
+  # The Insurgency dedicated server. 32-bit, so it needs its own image rather
+  # than the Wine one - see srcds.Dockerfile. Answers "does this map load" and
+  # "can nav_generate build a .nav for it" without a game client.
+  srcds:
+    <<: *work
+    build:
+      context: .
+      dockerfile: srcds.Dockerfile
+    image: ${MM_SRCDS_IMAGE:-mapmaker/srcds}
+    # In the image rather than out of it, so MM_SRCDS_IMAGE can point at any
+    # image that carries 32-bit libc/libstdc++ - including one another project
+    # already built - without caring what its own ENTRYPOINT is.
+    entrypoint: ["/bin/sh"]
+    environment:
+      HOME: /work/cache/srcds
+    stdin_open: true
+    tty: false
+
+  # SourcePawn compiler for plugin/scripting/*.sp -> plugin/build/*.smx.
+  # See tools/build-plugins.sh.
+  spcomp:
+    <<: *work
+    build:
+      context: .
+      dockerfile: spcomp.Dockerfile
+    image: mapmaker/spcomp
+
+  # ---------------------------------------------------------------- servers
+  # Both run the same 32-bit srcds image over the same bind-mounted game tree;
+  # they differ only in which plugin is loaded and what it is pointed at.
+  # Metamod:Source and SourceMod live in game/insurgency/addons, put there by
+  # tools/fetch-sourcemod.sh, so neither is baked into an image.
+
+  # Stage A of docs/layout-variants.md: walk the engine's nav mesh, trace the
+  # player hull, inventory the objective entities, write surveys/<map>.json,
+  # changelevel, repeat. Runs headless and unattended over a map list.
+  survey:
+    <<: *work
+    image: ${MM_SRCDS_IMAGE:-mapmaker/srcds}
+    build:
+      context: .
+      dockerfile: srcds.Dockerfile
+    entrypoint: ["/bin/sh"]
+    environment:
+      HOME: /work/cache/srcds
+    stdin_open: true
+    tty: false
+
+  # Stage C: the playable server. Rewrites the entity lump at OnLevelInit from
+  # a generated preset and rotates presets between loads. Clients join stock -
+  # there is no patched .bsp and nothing to download - so this is the only
+  # piece that has to be a real, reachable server.
+  layout:
+    <<: *work
+    image: ${MM_SRCDS_IMAGE:-mapmaker/srcds}
+    build:
+      context: .
+      dockerfile: srcds.Dockerfile
+    entrypoint: ["/bin/sh"]
+    environment:
+      HOME: /work/cache/srcds
+    ports:
+      - "${MM_PORT:-27015}:${MM_PORT:-27015}/udp"
+      - "${MM_PORT:-27015}:${MM_PORT:-27015}/tcp"
+    stdin_open: true
+    tty: true
