@@ -993,3 +993,142 @@ is inside the budget in all 21.
 | kunar | 2 of 5 | 31 s | 42 s |
 | breville_pve | 1 of 1 | 30 s | 39 s |
 | hideout_coop | 3 of 12 | 30 s | 37 s |
+
+## 13. The players spawned among the bots
+
+2026-09-23, contact_coop `reversed`: "player spawn on the same areas as the
+bots". Stage 3 there fights on rung 4 with its attackers on rung 5, and 16 of
+the 46 bot spawns stood within a 500 u walk of a player spawn, the nearest on
+the same nav area. The stock map never brings the two closer than 1,604 u.
+
+**It is structural, not that map's accident.** A shipped map puts a stage's
+defenders on the far side of their objective from the attackers' approach,
+and the attackers who have just taken an objective respawn on the near side of
+it - the side they came from. Walk one of those steps backwards and both zones
+are in the one gap between the two objectives: the defender zone authored past
+objective k towards k+1, and the attacker zone authored short of k+1 towards k.
+Nothing measured it. Every check before this one asks where a team stands
+relative to the *objectives*, never relative to the other team.
+
+Measured on the shipped presets by applying each one's edits to the survey the
+way the applier does and binding points to the live zones by containment:
+
+| | stages | a tenth or more of the bots within 500 u of a player spawn |
+|---|--:|--:|
+| stock | 929 | 14 (1.5%) |
+| permuted | 4,998 | 300 (6.0%) |
+
+242 of the 704 shipped layouts, on 65 of 117 maps, had at least one such
+stage - de_vertigo_coop 17 of 20, oms_corridor_coopb3 15 of 21, hideout_coop
+11 of 12. The shipped maps keep their nearest pair of spawns further apart than
+500 u on 96% of stages (p5 634 u, p10 1,025, median 2,477), so `SPAWN_CLEAR`
+is a line authors stay behind rather than an aspiration.
+
+**The attackers are the side that moves**, because they are the ones meant to
+stand on the objective they have just taken, and there is more than one place
+near it they can. A stage whose attacker points stand within `SPAWN_CLEAR` of
+its defender points - both borrowed, so both known before placement - is given,
+in order:
+
+1. **A nearby objective's attacker ground.** An unclaimed attacker zone whose
+   every point is clear of the bots, off this stage's objective, and no further
+   from the objective just taken than the shipped maps respawn attackers - a
+   median 1,109 u over 825 stock stages, p75 2,200 (`SPAWN_BEHIND`). A rename.
+2. **The previous objective's ground.** A free volume moved onto that rung's
+   defender points, then any authored coordinate of either team within
+   `SPAWN_BEHIND` of it, then the hull-valid floor there - and handed only
+   coordinates clear of the bots. The second and third pools are de_vertigo's:
+   its entry's own attacker ground *is* rung 3's defender ground, and without
+   them every walk attacking rung 3 from the entry was refused for having
+   nowhere to stand. With them the map keeps all 20 of its layouts.
+
+Where one side is moving and the other known, the mover is kept clear of it.
+Clearance is the shorter of the two walking directions: a one-way drop brings
+the bots down on the players as surely as the other way round, and measured one
+way a mover kept clear landed 424 u off the bots the other.
+
+Every stage then records `spawn_gap` and `bots_near`, and a permuted layout
+that still has a tenth of a stage's bots inside the line is refused
+(`SPAWN_CLASH_SHARE`, the share 14 of 929 stock stages exceed). As with §12, a
+re-site that gets a layout refused is undone and the layout rebuilt without it,
+counter-attack re-sites first, and kept if the gate passes it.
+
+**The gate reads what the engine binds, not what each cluster was handed.** Its
+first cut measured each cluster's own points in its own volume, and that is not
+what a server does. A borrower's `standing` is read off the survey before any
+rule, and where volumes share points a mover's rules carry some of them away:
+it refused market_coop's reversal for 23 of stage 1's 111 bots standing on the
+players, where the preset as applied binds 41 bots, none nearer than 997 u. And
+a stage's name can stand on more than one volume. So `as_applied` applies the
+layout's own rules to the survey the way the applier does - one walk, matched
+on the name and coordinate an entity had before the edit, first rule wins - and
+the gate runs after the last rule is written, on whatever of a team then stands
+in a volume under the stage's name. Measured over the same presets it agrees
+with a separate reading of the `.cfg` files stage for stage.
+
+Measuring it that way showed the re-site's first cut doing three things wrong,
+all through volumes that share ground:
+
+- **A mover placed its points in a pad.** A zone can be several volumes, some
+  holding no spawn point (`_zone_split`, the resupply pads of 2026-09-18), and
+  `_zone_moves` leaves those where the map put them - but the mover still
+  placed against every volume of the name. contact_coop's `spawnzone_4` team 2
+  is a 16-point volume and an empty one 1,984 u away; a re-sited stage 5 put
+  all 16 points in the empty one, passed its own bound check against where the
+  pad would have gone, and bound none. `_moving_volumes` is what the mover
+  places against now, on every layout: this one predates §13, and it is also
+  one of the ways a stage has been left with no points at all.
+- **A mover's points bound to another stage.** A point binds to every volume
+  holding it, and a pad left behind keeps its stage's name. The previous
+  objective's defender ground on contact_coop lies under `spawnzone_4`'s pad,
+  still stage 4's, so moving stage 5 onto it gave stage 4 ten players among its
+  own bots. The re-site's mover now keeps out of every volume of its team.
+- **A mover took points a borrower still stood on**, which is §13's last
+  subsection happening on purpose. Where a layout re-sits anything, its movers
+  take only points no borrower of their team stands on and nothing another
+  mover took, and a stage left with no point once every rule is applied
+  refuses the layout - which `layout` then rebuilds without the re-sites, as it
+  was built before them.
+
+cs_italy_coop `enter2_rev`, which a player reported as bad on a server the same
+day, is refused: its stage-4 attackers have nowhere clear of the bots to stand.
+
+### What a counter-attack uses, read off the binary
+
+The same player reported bots spawning "right on the objective" on that
+layout's counter-attacks, the final one and objective B's. §12's reading of the
+engine was checked against `server_srv.so` and holds:
+`CounterWaveStarted(i)` calls `AdvanceSpawns(i, defenders)`, which looks up
+cpsetup key i+1 and walks back with `PrevInorder` to disable the earlier ones;
+past the last objective it calls `RegressSpawns(i >= 3 ? i - 2 : 0, defenders,
+false)`, which disables every key above that and re-enables it. So a
+counter-attack on objective j spawns in stage j+1's defender zone and the final
+one in stage N-2's.
+
+Under that reading no committed version of `enter2_rev` puts a counter-attack
+on its objective - the nearest wave point is 1,792 u from B and 2,468 u from
+the final objective - and over the corpus a quarter of the wave within 300 u of
+the objective happens on 32 of 5,929 permuted counter-attacks, the same 0.5% as
+stock. What *does* stand on both B and the final objective on that layout is
+stage 9's own defender zone: the walk fights the last stage at the entry, where
+there is no defender zone to borrow, a volume is moved onto the rung's floor,
+and 32 of its 35 points land within 400 u of `cp_i` and 14 near `cp_b`. Whether
+the engine spawns a counter-attack wave outside its zone - a fallback when a
+large wave finds too few valid points, say - is not answerable offline. It is
+recorded here rather than guessed at in code.
+
+### What the measurement also found, and left alone
+
+On the 101 maps whose stock stages always hold points for both teams, 155 of
+the 570 shipped layouts have a stage in which one team has **no spawn point at
+all**. Some maps reuse one volume and its points for several stages -
+de_vertigo_coop ships `sz_a` and `sz_e` team 2 as one box over one set of 12
+points, and all thirteen of uprising's attacker zones share one set of 36 - so
+a mover that takes one of those volumes takes the points with it, and a stage
+standing in place in the other is left an empty zone. Excluding shared points
+from every mover does not fix it: on de_vertigo nearly every volume shares its
+points, so the mover then has none and the stage it was moving is the empty
+one. §13 guards only the layouts it re-sites, so it adds no empty stage of its
+own, and the pad fix above removes one cause outright. Refusing the rest is the
+honest answer and costs a large share of the corpus, which is a decision rather
+than a fix.

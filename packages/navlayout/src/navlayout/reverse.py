@@ -86,6 +86,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from .graph import NavGraph
 from .objectives import STOREY, Objective, Snapper, resolve
@@ -290,6 +291,36 @@ COUNTER_SECONDS = 30.0
 COUNTER_REACH = COUNTER_SECONDS * RUN_SPEED
 COUNTER_SLOWEST = 90
 COUNTER_TARGET = COUNTER_REACH / 2
+
+# How near the defenders' spawn points a stage's attackers may spawn, by path.
+# A player on contact_coop `reversed`, 2026-09-23: "player spawn on the same
+# areas as the bots". Stage 3 there fights on rung 4 with its attackers on rung
+# 5, and 16 of the 46 bot spawns stood within 500 u of a player spawn, the
+# nearest 0 u - the same nav area.
+#
+# It is structural, not that map's accident. A shipped map puts a stage's
+# defenders on the far side of their objective from the attackers' approach,
+# and the attackers who have just taken an objective respawn on the near side
+# of it, the side they came from. Walk one of those steps backwards and both
+# zones are in the one gap between the two objectives: the defender zone
+# authored past objective k towards k+1, and the attacker zone authored short of
+# objective k+1 towards k. Over the 704 layouts the corpus shipped, 242 on 65
+# maps had a stage with a tenth or more of its bot spawns inside this distance
+# of a player spawn; the 929 stock stages do that 14 times.
+#
+# 500 u is about three seconds of running. The shipped maps keep their nearest
+# pair of spawns further apart than that on 96% of stages (p5 634 u, p10 1,025,
+# median 2,477), so it is a line authors stay behind, not an aspiration.
+SPAWN_CLEAR = 500.0
+# A stage whose attackers still stand inside that line after every re-site with
+# at least this share of the stage's bot spawns is refused - the share the stock
+# maps exceed on 14 of 929 stages. Fewer than that is warned about and kept.
+SPAWN_CLASH_SHARE = 0.10
+# How far from the objective just taken a borrowed attacker zone may stand, by
+# its median point's path. The shipped maps respawn their attackers a median
+# 1,109 u from it over 825 stages (p75 2,200, p90 3,685); past the p75 the
+# previous objective's own ground is the nearer answer, and it is moved onto.
+SPAWN_BEHIND = 2200.0
 
 # How close to a rung's own floor counts as standing on it. Where the ladder
 # runs out - rung 0 has no defender zone, rung N no attacker one - the only
@@ -1536,6 +1567,21 @@ def _zone_moves(survey: Survey, name: str, team: int, **kw) -> tuple[list[Move],
             for v in held], pads
 
 
+def _moving_volumes(survey: Survey, name: str, team: int) -> list[Entity]:
+    """The volumes `_zone_moves` actually carries for this name - which is
+    what a move has to be placed against. The pads stay where the map put
+    them, so a placement that seats its points inside a pad seats them nowhere:
+    contact_coop's `spawnzone_4` team 2 is a 16-point volume and an empty one
+    1,984 u away, and a re-sited stage 5 put all 16 points in the empty one,
+    passed its own bound check against the pad's moved box, and bound none.
+    """
+    moves, pads = _zone_moves(survey, name, team)
+    if not pads:
+        return survey.spawn_zone(name, team)
+    pad_ids = {id(v) for v in pads}
+    return [v for v in survey.spawn_zone(name, team) if id(v) not in pad_ids]
+
+
 def _allowed_mask(points: list[np.ndarray], snap: Snapper,
                   allowed: np.ndarray | None) -> np.ndarray:
     """Which of `points` stand on an area `allowed` admits; all of them with no mask."""
@@ -2066,16 +2112,27 @@ def layout(
     the far stages warned about, as any stage the re-site could not help is.
     """
     lay = _layout(survey, setup, plan, **kw)
-    if lay.ok or not any("counter_from" in st for st in lay.stages):
-        return lay
-    plain = _layout(survey, setup, plan, resite_counters=False, **kw)
-    if not plain.ok:
+    if lay.ok:
         return lay
     why = next(w for w in lay.warnings if w.startswith("REFUSED"))
-    plain.warnings.append(
-        f"counter-attacks left unmoved: re-siting them refused this layout "
-        f"({why.removeprefix('REFUSED: ')})")
-    return plain
+    # Keeping the players out of the bots outranks the counter-attack's walk, so
+    # the counter-attacks are given up first. Giving up the separation as well
+    # can still pass: the gate below it only refuses a stage where a tenth of
+    # the bots stand inside the line, and the re-site fires on a single point.
+    tries = []
+    if any("counter_from" in st for st in lay.stages):
+        tries.append(({"resite_counters": False}, "counter-attacks left unmoved"))
+    if any("clash_from" in st or "kept_clear" in st for st in lay.stages):
+        tries.append(({"resite_counters": False, "separate_spawns": False},
+                      "attackers left on the ground the permutation gave them"))
+    for extra, what in tries:
+        plain = _layout(survey, setup, plan, **extra, **kw)
+        if plain.ok:
+            plain.warnings.append(
+                f"{what}: re-siting them refused this layout "
+                f"({why.removeprefix('REFUSED: ')})")
+            return plain
+    return lay
 
 
 def _layout(
@@ -2091,6 +2148,7 @@ def _layout(
     max_detour: float | None = None,
     rename: bool = True,
     resite_counters: bool = True,
+    separate_spawns: bool = True,
 ) -> Layout:
     """Build one layout of a map: which rung each stage is fought at.
 
@@ -2720,6 +2778,143 @@ def _layout(
         c["stage"]["source"] = "move"
         c["stage"]["counter_from"] = was
 
+    # ── do the players spawn among the bots? ─────────────────────────
+    #
+    # See `SPAWN_CLEAR`. Asked of every stage whose two clusters are both
+    # known before placement - borrowed, so their points are the map's own -
+    # and answered on the attackers' side: they are the ones meant to stand on
+    # the objective they have just taken, and there is more than one place near
+    # it they can. In order:
+    #
+    # 1. **A nearby objective's attacker ground.** An unclaimed attacker zone
+    #    whose every point is clear of the bots, off this stage's objective, and
+    #    no further from the objective just taken than the shipped maps respawn
+    #    attackers (`SPAWN_BEHIND`); nearest that objective wins. A rename, no
+    #    geometry.
+    # 2. **The previous objective's defender ground.** The bots of the stage
+    #    before stood there, the attackers have just cleared it, and it is on
+    #    the far side of that objective from this one. A free volume is moved
+    #    onto it, and its points are handed only coordinates clear of the bots.
+    #
+    # Where one side is moving and the other is known, the mover is simply kept
+    # clear of it; where both move, the placement is measured afterwards.
+    def _field(pts: list[np.ndarray]) -> np.ndarray:
+        """Path length between the nearest of `pts` and every area, whichever
+        way is shorter - a one-way drop brings the bots down on the players as
+        surely as the other way round, and measuring one direction only let a
+        mover kept clear one way land 424 u off the bots the other. The
+        straight line where the mesh has neither, as `_dist_from` does."""
+        areas = sorted({a for p in pts if (a := snap.snap(p)) is not None})
+        d = (np.minimum(graph.distances(areas), graph.distances_to(areas)) if areas
+             else np.full(len(graph.centers), np.inf))
+        ground, _ = cKDTree(np.asarray(pts)).query(graph.centers)
+        return np.where(np.isfinite(d), d, ground)
+
+    def _clear_mask(pts: list[np.ndarray], field: np.ndarray) -> np.ndarray:
+        """Which of `pts` stand at least `SPAWN_CLEAR` from what `field` measures."""
+        return np.array([(a := snap.snap(p)) is None or field[a] >= SPAWN_CLEAR
+                         for p in pts], dtype=bool)
+
+    def _known(c: dict) -> list[np.ndarray] | None:
+        return [q.origin for q in c["standing"]] if c["mode"] != "move" else None
+
+    def _keep_clear(c: dict, of: list[np.ndarray]) -> None:
+        mask = _field(of) >= SPAWN_CLEAR
+        c["allowed"] = mask if c.get("allowed") is None else c["allowed"] & mask
+        c["stage"]["kept_clear"] = True
+
+    separate = separate_spawns and plan.order != stock_plan(n).order
+    for j in range(1, n + 1) if separate else ():
+        a, d = attackers[j], defenders[j]
+        A, B = _known(a), _known(d)
+        if A is None and B is None:
+            continue
+        if A is None:
+            _keep_clear(a, B)
+            continue
+        if B is None:
+            _keep_clear(d, A)
+            continue
+        bots = _field(B)
+        near = int((~_clear_mask(A, bots)).sum())
+        if not near:
+            continue
+        prev, here = plan.at(j - 1), plan.at(j)
+        dp, dh = _dist_from(prev), _dist_from(here)
+        held = {c["from"] for c in attackers.values()
+                if c is not a and c["mode"] != "move"}
+        best = None
+        for zn in dict.fromkeys(setup.zones[:n]):
+            vols = survey.spawn_zone(zn, atk)
+            pts = survey.points_in_zone(zn, atk)
+            if zn in held or zn == a["from"] or not vols or len(pts) < MIN_POINTS:
+                continue
+            at = [q.origin for q in pts]
+            if not _clear_mask(at, bots).all():
+                continue
+            if _overlaps(_boxes(vols, np.zeros(3)), obj_box[j]):
+                continue
+            if dh is not None and _reach(at, dh, snap, 50) < SHORT_ADVANCE:
+                continue
+            reach = _reach(at, dp, snap, 50) if dp is not None else 0.0
+            if reach > SPAWN_BEHIND:
+                continue
+            if best is None or reach < best[0]:
+                best = (reach, zn, vols, pts)
+        if best is not None:
+            reach, zn, vols, pts = best
+            a.update(mode="in place" if zn == a["name"] else "borrow", **{"from": zn},
+                     borrowed=vols, standing=pts, live=True, anchor=None,
+                     authored=[q.origin for q in pts])
+            a["stage"]["source"] = zn if a["mode"] == "borrow" else "in place"
+            a["stage"]["clash_from"] = near
+            rev.warnings.append(
+                f"stage {j}'s attackers would spawn with {near} of their points "
+                f"within {SPAWN_CLEAR:.0f} u of the bots; they stand where {zn} "
+                f"stood instead, {reach:.0f} u from rung {prev}")
+            continue
+
+        # The previous objective's defender ground first, then any coordinate
+        # the map authored for either team within `SPAWN_BEHIND` of it - rung 0
+        # has no defenders, and on de_vertigo_coop the entry's own attacker
+        # ground is the ground rung 3's defenders stand in, so without the
+        # second pool a stage attacking from the entry had nowhere to go.
+        # `place_zone` ranks on the anchor, so the nearest ground still wins.
+        pool = ([q.origin for q in dest_points(survey, setup, prev, "defender", owner)]
+                if prev >= 1 else [])
+        if dp is not None:
+            pool += [q.origin for q in survey.spawn_points()
+                     if (x := snap.snap(q.origin)) is not None and dp[x] <= SPAWN_BEHIND]
+        # ...and out of every other volume of the attackers' team. A point
+        # binds to each volume holding it, so one placed inside another stage's
+        # zone spawns players for that stage too - and a pad left behind by a
+        # mover keeps its stage's name and is as live as the volume it came
+        # with. On contact_coop the previous objective's defender ground lay
+        # under `spawnzone_4`'s pad, still stage 4's after its volume moved:
+        # re-siting stage 5 there put 10 players in stage 4, among its bots.
+        others = [b for v in survey.spawn_zones(atk) if (b := survey.world_box(v))]
+        clear = [p for p, ok in zip(pool, _clear_mask(pool, bots)) if ok
+                 and not _inside(p, obj_box[j]) and not _inside(p, others)]
+        allowed = (bots >= SPAWN_CLEAR) & ~_inside_mask(graph.centers, others)
+        if not clear and dp is not None:
+            # Nothing authored is clear, so the floor that is: hull-valid area
+            # centres in reach of the objective just taken, nearest it first.
+            # They are the placements `place_zone` tries; its fills do the rest.
+            ok = np.flatnonzero(allowed & (dp <= SPAWN_BEHIND)
+                                & graph.hull_ok & ~graph.blocked)
+            clear = [graph.centers[i] for i in ok[np.argsort(dp[ok])][:32]
+                     if not _inside(graph.centers[i], obj_box[j])]
+        a.update(mode="move", borrowed=[], standing=[], live=False,
+                 anchor=rungs[prev].floor, authored=clear or [rungs[prev].floor],
+                 allowed=allowed,
+                 forbid=list(a.get("forbid", ())) + obj_box[j])
+        a["stage"]["source"] = "move"
+        a["stage"]["clash_from"] = near
+        rev.warnings.append(
+            f"stage {j}'s attackers would spawn with {near} of their points "
+            f"within {SPAWN_CLEAR:.0f} u of the bots; a volume is moved onto "
+            f"rung {prev}'s defender ground instead, clear of them")
+
     def _distinct(pts: list[Entity]) -> list[Entity]:
         """Two spawn points can share an origin, and a rule identifies one by the
         origin it has *before* the edit - so coincident points are one rule and
@@ -2777,6 +2972,24 @@ def _layout(
     # most like the one that stood on the destination: nearest in point count,
     # then whichever places with the most precedent under it.
     spoken_for = {(c["team"], c["from"]) for c in clusters if c["mode"] != "move"}
+    # ...nor the points inside one, where this layout re-sited anything. A
+    # point binds to every volume holding it, and a mover's rules carry it off
+    # for all of them: contact_coop's reversal, re-sited, left stage 5's
+    # attackers standing in a volume whose every point a mover had taken. So a
+    # re-sited layout's movers take only what no borrower still stands on, and
+    # nothing another mover took; one left with nothing is not live, and the
+    # layout is refused and rebuilt as it was before the re-sites (`layout`).
+    # A layout with no re-site is left exactly as it was built before them.
+    guard = any("clash_from" in c["stage"] or "kept_clear" in c["stage"]
+                for c in clusters)
+    held_by = {t: [b for c in clusters if c["mode"] != "move" and c["team"] == t
+                   for b in _boxes(c["borrowed"], np.zeros(3))]
+               for t in (atk, dfn)}
+    taken: set[int] = set()
+
+    def _free(q: Entity, team: int) -> bool:
+        return not guard or (id(q) not in taken and not _inside(q.origin, held_by[team]))
+
     for c in clusters:
         if c["mode"] != "move":
             continue
@@ -2787,9 +3000,10 @@ def _layout(
             options = [c["name"]]
         best = None
         for zn in options:
-            vols = survey.spawn_zone(zn, team)
+            vols = _moving_volumes(survey, zn, team)
             src = _distinct([q for q in survey.points_in_zone(zn, team)
-                             if zn != c["name"] or owner.get(id(q)) == c["j"]])
+                             if (zn != c["name"] or owner.get(id(q)) == c["j"])
+                             and _free(q, team)])
             if not vols or not src or not c["authored"]:
                 continue
             trial = dict(c, vols=vols, src=src)
@@ -2803,7 +3017,9 @@ def _layout(
             continue
         _key, zn, vols, src, put = best
         raw = [q for q in survey.points_in_zone(zn, team)
-               if zn != c["name"] or owner.get(id(q)) == c["j"]]
+               if (zn != c["name"] or owner.get(id(q)) == c["j"]) and _free(q, team)]
+        if guard:
+            taken.update(id(q) for q in raw)
         rev.coincident += len(raw) - len(src)
         c.update(vols=vols, src=src, put=put, live=True, took=zn)
         c["stage"].update(points=len(src), volumes=len(vols),
@@ -3094,6 +3310,66 @@ def _layout(
             f"round has already passed. The shipped map shares {rev.contested}."
         )
 
+    # ── and whether the players spawn among the bots, as applied ─────
+    # Measured on every walk, stock included, so a layout can be read against
+    # the map's own; refused only on a walk this module chose.
+    #
+    # Measured on what the engine will bind, which is not what each cluster
+    # was handed. A borrower's `standing` is read off the survey before any
+    # rule, and where volumes share points a mover's rules carry some away:
+    # market_coop's reversal read 23 of stage 1's 111 bots as standing on the
+    # players, where the preset as applied binds 41 bots, none nearer than
+    # 997 u. And a stage's name can end up on more than one volume -
+    # market_open_coop's `enter9_fwd` stage 4 read 2 of 37 bots near the
+    # players off the cluster's own volume, and 12 of 37 off every volume that
+    # answers to the name. So the layout's own rules are applied to the survey
+    # as the applier applies them (`as_applied`), and a stage's points are
+    # whatever of its team stands in a volume under its name.
+    zones_now, points_now = as_applied(survey, rev.moves)
+    resited = any("clash_from" in c["stage"] or "kept_clear" in c["stage"]
+                  for c in clusters)
+
+    def _bound(name: str, team: int) -> list[np.ndarray]:
+        boxes = [(lo, hi) for zn, t, lo, hi in zones_now if zn == name and t == team]
+        pts = [o for t, o in points_now if t == team]
+        if not boxes or not pts:
+            return []
+        return [o for o, m in zip(pts, _inside_mask(np.asarray(pts), boxes)) if m]
+
+    for j in range(1, n + 1):
+        a, d = attackers[j], defenders[j]
+        A, bots = _bound(setup.zones[j - 1], atk), _bound(setup.zones[j - 1], dfn)
+        if not A or not bots:
+            # Volumes that share points lose them to whichever mover takes
+            # them (§13 of docs/permute.md), and a re-site here adds movers.
+            # Where this layout re-sited anything it is refused for it, and
+            # `layout` rebuilds it without the re-sites - which is how it was
+            # built before them, and is left to say whatever it says.
+            if resited:
+                who = "attackers" if not A else "defenders"
+                rev.warnings.append(
+                    f"REFUSED: stage {j}'s {who} bind no spawn point once every "
+                    f"rule is applied - a re-site added a mover, and the volumes "
+                    f"it took share their points with this stage's")
+            continue
+        players = _field(A)
+        gaps = np.array([players[x] if (x := snap.snap(p)) is not None else np.inf
+                         for p in bots])
+        near = int((gaps < SPAWN_CLEAR).sum())
+        a["stage"]["spawn_gap"] = float(gaps.min())
+        a["stage"]["bots_near"] = near
+        if not near:
+            continue
+        share = near / len(bots)
+        says = (f"stage {j}: {near} of {len(bots)} bot spawns stand within "
+                f"{SPAWN_CLEAR:.0f} u of the players' spawn, the nearest "
+                f"{gaps.min():.0f} u")
+        if share >= SPAWN_CLASH_SHARE and plan.order != stock_plan(n).order:
+            rev.warnings.append(f"REFUSED: {says} - the players would spawn "
+                                "among the bots")
+        else:
+            rev.warnings.append(says)
+
     # ── restricted areas ─────────────────────────────────────────────
     bz = survey.by_class("ins_blockzone")
     if bz:
@@ -3127,6 +3403,53 @@ def _layout(
         )
 
     return rev
+
+
+def as_applied(survey: Survey, moves: list[Move]
+               ) -> tuple[list[tuple[str, int, np.ndarray, np.ndarray]],
+                          list[tuple[int, np.ndarray]]]:
+    """The survey's spawn zones and points as the applier leaves them.
+
+    Each entity goes to the first rule that matches it, on the name and the
+    coordinate it had before the edit - `mapmaker_layout.sp`'s one walk over
+    the lump. Returns every zone volume as `(name, team, lo, hi)` and every
+    spawn point as `(team, origin)`; binding is containment, so that is all a
+    stage's ground is.
+    """
+    zone_rules = [m for m in moves if m.cls == "ins_spawnzone"]
+    point_rules = [m for m in moves if m.cls == "ins_spawnpoint" and m.within is not None]
+
+    zones = []
+    for z in survey.spawn_zones():
+        box = survey.world_box(z)
+        if box is None:
+            continue
+        name, lo, hi = z.target, box[0].copy(), box[1].copy()
+        for m in zone_rules:
+            if m.target != z.target or (m.team is not None and m.team != z.team):
+                continue
+            if m.within is not None and not (np.all(z.origin >= m.within[0])
+                                             and np.all(z.origin <= m.within[1])):
+                continue
+            if m.offset is not None:
+                lo, hi = lo + m.offset, hi + m.offset
+            elif m.origin is not None:
+                lo, hi = lo + (m.origin - z.origin), hi + (m.origin - z.origin)
+            if m.rename:
+                name = m.rename
+            break
+        zones.append((name, z.team, lo, hi))
+
+    points = []
+    for q in survey.spawn_points():
+        at = q.origin
+        for m in point_rules:
+            if (m.team is None or m.team == q.team) \
+                    and np.all(q.origin >= m.within[0]) and np.all(q.origin <= m.within[1]):
+                at = m.origin
+                break
+        points.append((q.team, np.asarray(at, dtype=float)))
+    return zones, points
 
 
 def _marker_gap(point: np.ndarray, snap: Snapper) -> float:
