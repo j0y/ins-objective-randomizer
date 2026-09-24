@@ -107,6 +107,20 @@ class NavGraph:
         d = dijkstra(self.adj, directed=True, indices=src)
         return np.atleast_2d(d).min(axis=0)
 
+    def distances_to(self, targets: int | list[int]) -> np.ndarray:
+        """Shortest path length from every area *to* `targets`, `inf` if none.
+
+        `distances` run over the reversed edges. The two differ wherever a route
+        has a one-way edge in it: a drop is walkable towards the bottom and not
+        back, so measuring outward from an objective calls ground unreachable
+        that bots walk to it from every round.
+        """
+        dst = [targets] if isinstance(targets, int) else list(targets)
+        if not dst:
+            return np.full(self.n, INF)
+        d = dijkstra(self.adj.T.tocsr(), directed=True, indices=dst)
+        return np.atleast_2d(d).min(axis=0)
+
     def path(self, source: int, target: int) -> list[int]:
         """One shortest path, as area indices. Empty when unreachable."""
         d, pred = dijkstra(

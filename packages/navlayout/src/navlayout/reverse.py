@@ -254,6 +254,43 @@ LEVEL = 2 * STOREY
 # nothing is said.
 SHORT_SEPARATION = 700.0
 
+# How far a counter-attack may have to walk. **The zone a stage's defenders
+# spawn in is also the one the counter-attack on the objective before it comes
+# out of**: `CINSRules_Checkpoint::CounterWaveStarted(i)` calls
+# `AdvanceSpawns(i, defenders)`, which enables cpsetup key i+1 - the next
+# stage's zone - and that zone then stays live for the whole of the next stage.
+# So on a map whose legs are long, a counter-attack from "the next objective"
+# is bots who spend the counter-attack timer walking and never arrive.
+#
+# gioconda_eron_kordon is the map that shows the author knew it: every one of
+# its eleven counter-attacks starts 2,418-4,088 u by path from the objective
+# just taken, on legs of up to 12,016 u, because its zones are authored around
+# the *previous* objective rather than their own.
+#
+# Measured on the ground a counter-attack actually comes out of - every point
+# of the zone, not its middle - and in time, because the timer is the budget: a
+# player runs at 170 u/s (`speed_run` in the playerclass script; `speed_sprint`
+# 288 is stamina-limited), and on a one-minute counter-attack the slowest tenth
+# of the wave, over the 759 stock stages of the maps above, needs:
+#
+#   p25 22 s   median 29 s   p75 35 s   p90 43 s
+#
+# while the gioconda maps ship stages at 40 s (kordon), 59 s (mountains), 74 s
+# (agroprom_bef) and 103 s (garbage). **30 s is the budget** - what a typical
+# shipped stage asks of its slowest bots, and the answer the server's operator
+# gave for how long a player may be left waiting in a one-minute timer - so a
+# stage whose slowest tenth would take longer is given ground that is nearer,
+# and a small map never reaches it, which is why nothing here changes one.
+#
+# Where no authored ground qualifies a volume is moved onto the path forward
+# from the objective just taken, centred half the budget out, and only
+# coordinates inside the budget are handed to its points.
+RUN_SPEED = 170.0
+COUNTER_SECONDS = 30.0
+COUNTER_REACH = COUNTER_SECONDS * RUN_SPEED
+COUNTER_SLOWEST = 90
+COUNTER_TARGET = COUNTER_REACH / 2
+
 # How close to a rung's own floor counts as standing on it. Where the ladder
 # runs out - rung 0 has no defender zone, rung N no attacker one - the only
 # pool `dest_points` can offer is the *other* team's, and that team's zone can
@@ -1417,6 +1454,14 @@ def _inside(p: np.ndarray, boxes: list[tuple[np.ndarray, np.ndarray]]) -> bool:
     return any(bool(np.all(p >= lo) and np.all(p <= hi)) for lo, hi in boxes)
 
 
+def _inside_mask(pts: np.ndarray, boxes: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+    """`_inside` for an (n, 3) array of points at once."""
+    m = np.zeros(len(pts), dtype=bool)
+    for lo, hi in boxes:
+        m |= np.all((pts >= lo) & (pts <= hi), axis=1)
+    return m
+
+
 def _overlaps(a: list[tuple[np.ndarray, np.ndarray]],
               b: list[tuple[np.ndarray, np.ndarray]]) -> bool:
     """Do any two of these boxes share space?
@@ -1491,9 +1536,20 @@ def _zone_moves(survey: Survey, name: str, team: int, **kw) -> tuple[list[Move],
             for v in held], pads
 
 
+def _allowed_mask(points: list[np.ndarray], snap: Snapper,
+                  allowed: np.ndarray | None) -> np.ndarray:
+    """Which of `points` stand on an area `allowed` admits; all of them with no mask."""
+    if allowed is None:
+        return np.ones(len(points), dtype=bool)
+    return np.array([(a := snap.snap(p)) is not None and bool(allowed[a])
+                     for p in points], dtype=bool)
+
+
 def _usable(vols: list[Entity], delta: np.ndarray, authored: list[np.ndarray],
             snap: Snapper, graph: NavGraph,
-            need: int | None = None) -> tuple[list[np.ndarray], int, float]:
+            need: int | None = None,
+            allowed: np.ndarray | None = None,
+            authored_ok: np.ndarray | None = None) -> tuple[list[np.ndarray], int, float]:
     """Where a team could stand if its zone were moved by `delta`.
 
     Authored coordinates first - one the engine accepted on the stock map is
@@ -1514,9 +1570,23 @@ def _usable(vols: list[Entity], delta: np.ndarray, authored: list[np.ndarray],
     inside what the shipped maps authored. Nothing already accepted is dropped
     by a later pass, so the first coordinates are still the well-spread ones.
     Returns the spacing it settled at alongside the coordinates.
+
+    `allowed`, where given, is a mask over areas: a coordinate standing on any
+    other area is not offered, authored or not. It is how a counter-attack is
+    kept inside its budget when its volume is bigger than the budget is.
+    `authored_ok` is that mask already asked of `authored`, which does not
+    depend on `delta` - so a caller trying many moves need only snap them once.
     """
     boxes = _boxes(vols, delta)
-    keep = [a for a in authored if _inside(a, boxes)]
+    if authored_ok is None:
+        authored_ok = _allowed_mask(authored, snap, allowed)
+
+    # Everything below is asked of whole arrays at once. `place_zone` calls this
+    # once per candidate move, dozens of times a stage, and asked point by point
+    # it was nine-tenths of what `permute --all` spent.
+    inside_auth = (_inside_mask(np.asarray(authored), boxes) if len(authored)
+                   else np.zeros(0, dtype=bool))
+    keep = [a for a, m, ok in zip(authored, inside_auth, authored_ok) if m and ok]
     n_authored = len(keep)
 
     pool: set[int] = set()
@@ -1528,23 +1598,40 @@ def _usable(vols: list[Entity], delta: np.ndarray, authored: list[np.ndarray],
     # beside, and the volume's own middle is the only thing left to measure from.
     anchor = (np.mean(keep, axis=0) if keep
               else np.mean([(lo + hi) / 2 for lo, hi in boxes], axis=0))
-    fill = sorted(
-        (i for i in pool
-         if graph.hull_ok[i] and not graph.blocked[i]
-         and _inside(graph.centers[i], boxes)),
-        key=lambda i: float(np.linalg.norm(graph.centers[i] - anchor)),
-    )
+    # The set's own iteration order, so the stable sort breaks ties as the
+    # `sorted()` this replaced did.
+    idx = np.fromiter(pool, dtype=np.intp, count=len(pool))
+    m = graph.hull_ok[idx] & ~graph.blocked[idx]
+    if allowed is not None:
+        m &= allowed[idx]
+    idx = idx[m]
+    idx = idx[_inside_mask(graph.centers[idx], boxes)]
+    order = np.argsort(np.linalg.norm(graph.centers[idx] - anchor, axis=1),
+                       kind="stable")
+    fill = idx[order]
+    F = graph.centers[fill]
 
-    spent: set[int] = set()
+    # Greedy spacing, in `fill` order: a centre is taken when it is at least
+    # `sep` from everything kept so far. `near` is each candidate's distance to
+    # the nearest kept point, updated once per point taken rather than measured
+    # afresh against all of `keep` for every candidate. A taken centre is 0 from
+    # itself, so a later, looser pass cannot take it twice.
+    near = np.full(len(fill), np.inf)
+    for k in keep:
+        near = np.minimum(near, np.linalg.norm(F - k, axis=1))
+
     sep = FILL_SEPARATIONS[0]
     for sep in FILL_SEPARATIONS:
-        for i in fill:
-            if i in spent:
-                continue
-            c = graph.centers[i]
-            if all(float(np.linalg.norm(c - k)) >= sep for k in keep):
-                keep.append(c)
-                spent.add(i)
+        t = 0
+        while t < len(fill):
+            hits = np.flatnonzero(near[t:] >= sep)
+            if not hits.size:
+                break
+            t += int(hits[0])
+            c = graph.centers[fill[t]]
+            keep.append(c)
+            near = np.minimum(near, np.linalg.norm(F - c, axis=1))
+            t += 1
         if need is None or len(keep) >= need:
             break
     return keep, n_authored, sep
@@ -1555,7 +1642,8 @@ def place_zone(vols: list[Entity], src_at: np.ndarray, authored: list[np.ndarray
                avoid: list[np.ndarray] = (),
                avoid_boxes: list[tuple[np.ndarray, np.ndarray]] = (),
                anchor: np.ndarray | None = None,
-               forbid: list[tuple[np.ndarray, np.ndarray]] = ()):
+               forbid: list[tuple[np.ndarray, np.ndarray]] = (),
+               allowed: np.ndarray | None = None):
     """Where to slide a zone, and what its team can stand on once it is there.
 
     Lining the incoming cluster's centre up with the destination cluster's is
@@ -1616,16 +1704,19 @@ def place_zone(vols: list[Entity], src_at: np.ndarray, authored: list[np.ndarray
     if anchor is not None:
         cands += [anchor - v.origin for v in vols]
     avoid_boxes = list(avoid_boxes)
+    avoid_pts = np.asarray(avoid, dtype=float).reshape(-1, 3)
+    authored_ok = _allowed_mask(authored, snap, allowed)
 
     best = (home, [], 0, FILL_SEPARATIONS[0], 0)
     best_key = None
     for d in cands:
-        coords, n_auth, sep = _usable(vols, d, authored, snap, graph, need)
+        coords, n_auth, sep = _usable(vols, d, authored, snap, graph, need, allowed,
+                                      authored_ok)
         leaks = 0
-        if avoid or avoid_boxes:
-            boxes = _boxes(vols, d)
-            leaks = sum(1 for p in avoid if _inside(p, boxes))
-            leaks += sum(1 for c in coords[:need] if _inside(c, avoid_boxes))
+        if len(avoid) or avoid_boxes:
+            leaks = int(_inside_mask(avoid_pts, _boxes(vols, d)).sum())
+            if coords[:need]:
+                leaks += int(_inside_mask(np.asarray(coords[:need]), avoid_boxes).sum())
         # Enough is enough: past the incoming point count another coordinate
         # buys nothing, so it stops competing with position.
         enough = min(len(coords), need)
@@ -1852,6 +1943,38 @@ def rung_distances(rungs: list[Rung], snap: Snapper, graph: NavGraph) -> np.ndar
     return D
 
 
+def _reach(pts: list[np.ndarray], dist: np.ndarray, snap: Snapper,
+           q: float = COUNTER_SLOWEST) -> float:
+    """How far a cluster's counter-attack walks: the path distance from its
+    points to the rung `dist` was measured from, at the `q`th percentile - the
+    slowest of the wave, not its middle, since a zone is a volume and a big one
+    spawns bots in its far corner too. `inf` for a cluster with no point on the
+    mesh, which no rule can accept - and `inf` where the percentile falls among
+    points with no path at all, which interpolating between two `inf`s would
+    otherwise make NaN: a NaN compares false against every budget, so the
+    stages furthest out of reach were the ones that passed."""
+    areas = [snap.snap(p) for p in pts]
+    d = [float(dist[a]) for a in areas if a is not None]
+    if not d:
+        return float("inf")
+    r = float(np.percentile(d, q))
+    return float("inf") if np.isnan(r) else r
+
+
+def _along(graph: NavGraph, src: int, dst: int, at: float) -> np.ndarray | None:
+    """The floor `at` units down the mesh path from area `src` towards `dst` -
+    or the far end, where the path is shorter than that."""
+    path = graph.path(src, dst) if src >= 0 and dst >= 0 else []
+    if not path:
+        return None
+    walked = 0.0
+    for a, b in zip(path, path[1:]):
+        walked += float(np.linalg.norm(graph.centers[b] - graph.centers[a]))
+        if walked >= at:
+            return graph.centers[b].copy()
+    return graph.centers[path[-1]].copy()
+
+
 def measure_advances(plan: Plan, D: np.ndarray) -> tuple[list[dict], list[float]]:
     """Each stage's advance under `plan`, and the stock advances to read it against.
 
@@ -1924,6 +2047,41 @@ def layout(
     survey: Survey,
     setup: CpSetup,
     plan: Plan | None = None,
+    **kw,
+) -> Layout:
+    """Build one layout - see `_layout` - re-siting far counter-attacks where
+    that costs nothing.
+
+    **The counter-attack budget is a target, and a target cannot refuse a
+    layout.** Re-siting a far counter-attack borrows or moves a defender zone,
+    and that volume can cover the ground another stage's defenders were going to
+    stand on. On district_coop_old_fixbysakey it cost the reversal: stage 4's
+    counter-attack was 32 s against the 30 s budget, the zone borrowed for it
+    covered rung 4, and stage 2's 88 defenders were left 0 coordinates - on a
+    map whose own stock walk counter-attacks from 46 s out. glycencity,
+    karkand_redux_p2 and oilfield_pve lost every layout they had the same way.
+
+    So a layout the re-site refused is built again with every counter-attack
+    left where the permutation put it, and that one is kept if it passes - with
+    the far stages warned about, as any stage the re-site could not help is.
+    """
+    lay = _layout(survey, setup, plan, **kw)
+    if lay.ok or not any("counter_from" in st for st in lay.stages):
+        return lay
+    plain = _layout(survey, setup, plan, resite_counters=False, **kw)
+    if not plain.ok:
+        return lay
+    why = next(w for w in lay.warnings if w.startswith("REFUSED"))
+    plain.warnings.append(
+        f"counter-attacks left unmoved: re-siting them refused this layout "
+        f"({why.removeprefix('REFUSED: ')})")
+    return plain
+
+
+def _layout(
+    survey: Survey,
+    setup: CpSetup,
+    plan: Plan | None = None,
     *,
     graph: NavGraph | None = None,
     blockzones: str = "follow",
@@ -1932,6 +2090,7 @@ def layout(
     min_separation: float | None = None,
     max_detour: float | None = None,
     rename: bool = True,
+    resite_counters: bool = True,
 ) -> Layout:
     """Build one layout of a map: which rung each stage is fought at.
 
@@ -2450,6 +2609,117 @@ def layout(
                                                        rungs[resite[j][0]].floor)])
                                        if clash else ()})
 
+    # ── counter-attacks: can the next stage's defenders reach the ground? ──
+    #
+    # Stage j's defender zone is what the counter-attack on stage j-1's
+    # objective spawns in (see `COUNTER_REACH`), so the rung it is handed is
+    # measured against the rung just taken as well as the one it defends. Where
+    # it is out of reach the stage is given authored defender ground that is in
+    # reach - nearest its own objective, and not on top of the objective just
+    # taken - which on gioconda_eron_kordon is the zone its author put around
+    # that objective for exactly this. Where no authored ground qualifies a
+    # free volume is moved onto the path forward from the rung just taken.
+    rareas = rung_areas(rungs, snap, graph)
+    _from: dict[int, np.ndarray] = {}
+
+    # Path length from every area *to* rung r - the way a counter-attack walks.
+    # Measured outward instead, every one-way drop on the route read as a wall.
+    #
+    # Where the mesh has no path at all it is the straight line to the rung's
+    # floor, for the reason `mesh_or_ground` gives for advances: the pair is
+    # walked in game and the survey draws no link, and the straight line is the
+    # least any walk can be. Left `inf`, it was worse than a bad measurement:
+    # ps7's honest mesh strands five of its eleven rungs on islands, every
+    # counter-attack onto them read as out of reach from everywhere, and the
+    # fallback's `allowed` mask - ground inside the budget - left a rung 1-4
+    # coordinates to put 32 defenders on. Before that `_reach` interpolated
+    # between two `inf`s and got NaN, which passed every check it was put to.
+    def _dist_from(r: int) -> np.ndarray | None:
+        if rareas[r] < 0:
+            return None
+        if r not in _from:
+            d = graph.distances_to(rareas[r])
+            ground = np.linalg.norm(graph.centers - rungs[r].floor, axis=1)
+            _from[r] = np.where(np.isfinite(d), d, ground)
+        return _from[r]
+
+    defenders = {c["j"]: c for c in clusters if c["role"] == "defender"}
+    attackers = {c["j"]: c for c in clusters if c["role"] == "attacker"}
+    # The stock walk is left as the map ships it, far counter-attacks and all:
+    # it is the control every layout is read against, and the identity it has to
+    # be is what checks this whole operation (§3 of docs/permute.md).
+    far: list[dict] = []
+    counters = resite_counters and plan.order != stock_plan(n).order
+    for j in range(2, n + 1) if counters else ():
+        c, dist = defenders[j], _dist_from(plan.at(j - 1))
+        if dist is None:
+            continue
+        pts = ([q.origin for q in c["standing"]] if c["mode"] != "move"
+               else c["authored"])
+        if _reach(pts, dist, snap) > COUNTER_REACH:
+            far.append(c)
+
+    claimed = {c["from"] for c in defenders.values()
+               if c["mode"] != "move" and not any(c is f for f in far)}
+    ground = {zn: (survey.spawn_zone(zn, dfn), survey.points_in_zone(zn, dfn))
+              for zn in dict.fromkeys(setup.zones)}
+    everyone = [q.origin for _, pts in ground.values() for q in pts]
+    for c in far:
+        j = c["j"]
+        prev, here = plan.at(j - 1), plan.at(j)
+        dp, dh = _dist_from(prev), _dist_from(here)
+        arrival = attackers[j]
+        arrive_boxes = (_boxes(arrival["borrowed"], np.zeros(3))
+                        if arrival["mode"] != "move" else [])
+        was = _reach([q.origin for q in c["standing"]] if c["mode"] != "move"
+                     else c["authored"], dp, snap)
+        best = None
+        for zn, (vols, pts) in ground.items():
+            if zn in claimed or not vols or len(pts) < MIN_POINTS:
+                continue
+            at = [q.origin for q in pts]
+            reach = _reach(at, dp, snap)
+            if reach > COUNTER_REACH or _reach(at, dp, snap, 50) < SHORT_ADVANCE:
+                continue
+            if arrive_boxes and _overlaps(_boxes(vols, np.zeros(3)), arrive_boxes):
+                continue
+            key = (_reach(at, dh, snap) if dh is not None else 0.0, reach)
+            if best is None or key < best[0]:
+                best = (key, zn, vols, pts, reach)
+        if best is not None:
+            _key, zn, vols, pts, reach = best
+            mode = "in place" if zn == c["name"] else "borrow"
+            c.update(mode=mode, **{"from": zn}, borrowed=vols, standing=pts,
+                     authored=[q.origin for q in pts], live=True, anchor=None)
+            c["stage"]["source"] = zn if mode == "borrow" else mode
+            c["stage"]["counter_from"] = was
+            claimed.add(zn)
+            rev.warnings.append(
+                f"stage {j}'s defenders would counter-attack rung {prev} from "
+                f"{was:.0f} u away ({was / RUN_SPEED:.0f} s for the slowest "
+                f"tenth); they stand where {zn} stood instead, {reach:.0f} u "
+                f"({reach / RUN_SPEED:.0f} s)")
+            continue
+
+        at = _along(graph, rareas[prev], rareas[here],
+                    min(COUNTER_TARGET, float(D[prev, here]) / 2))
+        if at is None:
+            rev.warnings.append(
+                f"stage {j}'s defenders counter-attack rung {prev} from "
+                f"{was:.0f} u away and there is no path to put them nearer")
+            continue
+        # Somewhere a bot can stand, inside the budget and off the objective
+        # just taken - which is where the attackers now respawn.
+        allowed = (dp <= COUNTER_REACH) & (dp >= SHORT_ADVANCE)
+        near = [p for p in everyone
+                if float(np.linalg.norm(p - at)) <= COUNTER_TARGET
+                and (a := snap.snap(p)) is not None and allowed[a]]
+        c.update(mode="move", borrowed=[], standing=[], live=False, anchor=at,
+                 authored=near or [at], allowed=allowed,
+                 forbid=list(obj_box[j - 1]) + arrive_boxes)
+        c["stage"]["source"] = "move"
+        c["stage"]["counter_from"] = was
+
     def _distinct(pts: list[Entity]) -> list[Entity]:
         """Two spawn points can share an origin, and a rule identifies one by the
         origin it has *before* the edit - so coincident points are one rule and
@@ -2479,7 +2749,7 @@ def layout(
         delta, cand, n_auth, sep, _leaked = place_zone(
             c["vols"], src_at, c["authored"], len(c["src"]), snap, graph,
             avoid=avoid, avoid_boxes=avoid_boxes, anchor=c.get("anchor"),
-            forbid=c.get("forbid", ()))
+            forbid=c.get("forbid", ()), allowed=c.get("allowed"))
         return {"src_at": src_at, "delta": delta, "cand": cand, "n_auth": n_auth,
                 "sep": sep, "boxes": _boxes(c["vols"], delta),
                 "points": _assign(c["src"], cand, n_auth)}
@@ -2647,6 +2917,19 @@ def layout(
                 f"was not borrowed: {took} is moved onto rung {from_rung} "
                 f"instead and the cluster lands {away:.0f} u off the objective"
             )
+
+    # ── how far each counter-attack walks, as placed ─────────────────
+    for j in range(2, n + 1):
+        c, dist = defenders[j], _dist_from(plan.at(j - 1))
+        if dist is None or not c["live"] or not c["put"]["points"]:
+            continue
+        reach = _reach(c["put"]["points"], dist, snap)
+        c["stage"]["counter_reach"] = reach
+        if reach > COUNTER_REACH:
+            rev.warnings.append(
+                f"stage {j}'s defenders counter-attack rung {plan.at(j - 1)} "
+                f"from {reach:.0f} u away - {reach / RUN_SPEED:.0f} s for the "
+                f"slowest tenth, over the {COUNTER_SECONDS:.0f} s budget")
 
     # ── and what all that comes to, one cluster at a time ────────────
     for c in clusters:
@@ -2923,6 +3206,10 @@ def _preset_block(rev: Layout, name: str | None = None) -> list[str]:
         stock_detour = rev.stock_metrics.get("worst_detour")
         if stock_detour is not None and np.isfinite(stock_detour):
             out.append(f'\t\t\t"stock_detour"  "{stock_detour:.2f}"')
+    counter = [st["counter_reach"] for st in rev.stages
+               if np.isfinite(st.get("counter_reach", float("nan")))]
+    if counter:
+        out.append(f'\t\t\t"worst_counter" "{max(counter):.0f}"')
     out += ["\t\t}", ""]
 
     out += ['\t\t"edit"', "\t\t{"]

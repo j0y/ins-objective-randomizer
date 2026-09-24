@@ -848,3 +848,148 @@ arrival cost dead_air two spawn points of 634 and the other two none. almaden_co
 is the one worth noticing: the stock map logs `Failed finding CP area` twice and
 the reversal logs it **not at all**, because standing an objective on a rung
 puts its marker on floor that the shipped map never had under it.
+
+## 12. A counter-attack comes out of the next stage's zone, and has a timer
+
+2026-09-23, gioconda_eron_kordon: on a map that size the counter-attack came
+from the next objective, and the bots spent the whole timer walking. "That's ok
+for small maps, but gioconda's are too big." On this server a counter-attack
+lasts one minute.
+
+**What the engine does.** `CINSRules_Checkpoint::CounterWaveStarted(i)` calls
+`CINSRules::AdvanceSpawns(i, defenders)`, which finds cpsetup key i+1, enables
+its zones and disables key i's. That is the *next stage's* defender zone, and
+it stays live for the rest of that stage - there is no separate counter-attack
+zone to author. So the ground a stage's defenders spawn on is also the ground
+the counter-attack on the objective before it comes out of. (The finale is
+different: past the last objective it calls `RegressSpawns(max(i-2, 0))`, a zone
+two stages back. Nothing here changes it.)
+
+**What kordon's author did about it.** Its zones are authored around the
+*previous* objective rather than their own - 10 of its 11 counter-attack
+stages, by path. The shipped counter-attack starts 2.4-4.1k u from the
+objective just taken on legs of up to 12k u, and the defenders then walk
+forward to the next one. The ladder assumed the other convention (defender
+zone k sits on rung k, `docs/reverse.md` §2), so a permuted kordon handed each
+stage the zone standing one rung along *in stock order* - which in a permuted
+walk is anywhere. The committed presets put counter-attacks up to 15.5k u out.
+
+**The rule is measured in time, on the slowest bots.** A player runs at
+170 u/s (`speed_run`; `speed_sprint` 288 is stamina-limited). A zone is a volume
+and a big one spawns bots in its far corner, so what counts is the 90th
+percentile of its spawn points' path distance to the objective just taken, not
+its middle. Over the 759 stock stages of the non-gioconda maps, that slowest
+tenth needs p25 22 s, median 29 s, p75 35 s, p90 43 s; the gioconda maps ship
+stages at 40 s (kordon), 59 s (mountains), 74 s (agroprom_bef) and 103 s
+(garbage). **The budget is 30 s** (`COUNTER_SECONDS`, 5,100 u): what a typical
+shipped stage asks, and the server operator's answer for how long players may
+wait inside a one-minute timer.
+
+Per stage j >= 2, where the zone it would get is over budget:
+
+1. **Borrow authored ground in reach.** Any unclaimed defender zone whose
+   slowest tenth is inside the budget and whose median point is not on the
+   objective just taken (`SHORT_ADVANCE`), and whose volume misses the
+   attackers' arrival; nearest its own objective wins. A rename, no geometry.
+   On kordon this recovers the author's own zones around the previous objective.
+2. **Otherwise move a volume** onto the path forward from the objective just
+   taken, centred half the budget out, and hand its points only coordinates
+   inside the budget and at least `SHORT_ADVANCE` off that objective - so a big
+   volume cannot put the wave in its far corner.
+
+The stock walk is left as the map ships, far counter-attacks and all: it is the
+control, and the identity it must be is the self-test of §3. The map's own
+spawn points are not second-guessed either - kordon's zones put a few bots
+within a few hundred units of the objective just taken, and that is the
+author's design, not a fault. Each preset's metrics now carry `worst_counter`,
+the slowest tenth's path distance on its worst stage.
+
+**kordon, before and after**, 21 layouts plus the control:
+
+| | committed | now |
+|---|--:|--:|
+| worst counter-attack, slowest tenth | up to 15.5k u by median alone | **<= 30 s** in all 21 |
+| stages reassigned per layout | - | 7-10 of 11 |
+| of those, volumes moved | - | 2-3 |
+| spawn-point rules per layout | 79 | 225 |
+| file | 490 KB | 1.16 MB |
+
+The file is bigger because a moved zone costs one rule per point it carries,
+where a borrowed one costs one rename. The applier reads the whole file at map
+load and one preset from it.
+
+**Measured the way a counter-attack walks.** The first cut of this measured
+each distance *outward* from the objective, over a directed mesh. Every one-way
+drop on a route then read as a wall, and where the honest mesh (`honest.py`)
+leaves a rung on an island - ps7 strands five of its eleven - nothing reached
+it at all. `_reach` interpolated between two `inf`s and got NaN, `NaN >
+COUNTER_REACH` is false, and on 80 maps the stages furthest out of reach were
+the ones that passed every check. Now it is `graph.distances_to` - towards the
+rung - and an area with no path at all is given the straight line to the rung's
+floor, which is `mesh_or_ground`'s answer for advances and for the same reason:
+the pair is walked in game, and the straight line is the least any walk can be.
+
+Re-measured that way, the stock calibration above stands: over 854 stock stages
+of the non-gioconda maps the slowest tenth needs p25 22 s, median 29 s, p75
+36 s, p90 43 s. No stage is unmeasurable; 14% of the points are measured by
+the straight line.
+
+**A re-site that refuses the layout is undone.** Once the far stages were
+measured, re-siting them cost whole families: the borrowed or moved volume
+covers ground another stage's defenders were to stand on, and they are left
+none. district_coop_old_fixbysakey lost its reversal that way - stage 4 was
+32 s against 30, the zone borrowed for it covered rung 4, and stage 2's 88
+defenders had 0 coordinates - on a map whose own stock walk counter-attacks
+from 46 s out. So `layout` builds a refused layout again with the
+counter-attacks left where the permutation put them, keeps it if it passes, and
+says so ("counter-attacks left unmoved"). A layout that passed with its
+re-sites is untouched by this; 59 layouts on 9 maps are built the second way.
+
+**The corpus, regenerated 2026-09-23** (`tools/make-presets.sh`, 49 min):
+
+| | before §12 | now |
+|---|--:|--:|
+| maps with a preset | 117 | 117 |
+| layouts | 703 | 704 |
+
+No map lost a layout; cs_agency_ins_b2 gained `enter6_fwd`. 137 layouts on 34
+maps still counter-attack from over 30 s, 65 of them from no further than the
+map's own stock walk does. gioconda_eron_kordon, the map this section is for,
+is inside the budget in all 21.
+
+| map | layouts over 30 s | worst | stock worst |
+|---|--:|--:|--:|
+| iron_express | 1 of 1 | 104 s | 93 s |
+| karkand_coop_p1_redux_v1_7 | 16 of 16 | 101 s | 67 s |
+| oilfield_pve | 17 of 17 | 96 s | 74 s |
+| glycencity | 1 of 1 | 90 s | 58 s |
+| embassy_coop_141103 | 6 of 6 | 77 s | 45 s |
+| karkand_redux_p2 | 3 of 3 | 77 s | 50 s |
+| buhriz_open_coop | 3 of 3 | 62 s | 40 s |
+| buhriz_night_coop | 1 of 1 | 62 s | 39 s |
+| cementplant | 15 of 19 | 61 s | 37 s |
+| gioconda_eron_garbage | 14 of 17 | 59 s | 103 s |
+| ps7 | 3 of 3 | 53 s | 51 s |
+| district_coop_old_fixbysakey | 1 of 1 | 51 s | 46 s |
+| prospect_coop_b6 | 3 of 3 | 50 s | 72 s |
+| peak_coop | 15 of 15 | 47 s | 45 s |
+| sinjar_night_coop | 2 of 6 | 47 s | 50 s |
+| marquis | 5 of 8 | 47 s | 47 s |
+| heights_coop | 1 of 3 | 46 s | 41 s |
+| siege_coop | 1 of 2 | 45 s | 31 s |
+| congress_coop | 1 of 1 | 45 s | 91 s |
+| buhriz_coop | 1 of 1 | 43 s | 46 s |
+| bombshelter | 1 of 13 | 41 s | 28 s |
+| panama_canal_b2 | 1 of 1 | 41 s | 75 s |
+| market_open_coop | 2 of 4 | 40 s | 65 s |
+| market_night_coop | 2 of 4 | 40 s | 65 s |
+| revolt_coop | 2 of 4 | 36 s | 58 s |
+| tell_open_coop | 2 of 4 | 35 s | 40 s |
+| gizab_aof | 3 of 3 | 34 s | 29 s |
+| szepezd_redux_coop | 1 of 1 | 33 s | 39 s |
+| ins_italy_coop | 1 of 2 | 32 s | 36 s |
+| cs_agency_ins_b2 | 1 of 4 | 31 s | 23 s |
+| point_blank_fix | 5 of 9 | 31 s | 37 s |
+| kunar | 2 of 5 | 31 s | 42 s |
+| breville_pve | 1 of 1 | 30 s | 39 s |
+| hideout_coop | 3 of 12 | 30 s | 37 s |
