@@ -4,10 +4,10 @@
 # The .smx files cannot be diffed - spcomp does not produce the same
 # bytes twice. These hashes are what says whether they are current.
 
-inputs  45da8b67e5ea673e
+inputs  f87f3fc6d4c40843
 spcomp  SourcePawn Compiler 1.11.0.6968
 
-plugin/scripting/mapmaker_layout.sp            f7f22dfb1a183d08
+plugin/scripting/mapmaker_layout.sp            f065d88d67f0a25c
 plugin/scripting/mapmaker_survey.sp            af1db7aba8abe7c2
 plugin/scripting/include/mm_nav.inc            d78ba177e02ce4f5
 plugin/gamedata/mapmaker.txt                   89e516aa443eba0b

@@ -1196,7 +1196,7 @@ static void MoveObjectives(bool verbose = true)
 	for (int i = 0; i < g_objCount; i++)
 	{
 		int ent = FindObjectiveEntity(g_objName[i], g_objHasFrom[i], g_objFrom[i],
-			g_objOrigin[i], "objective");
+			g_objOrigin[i], "objective", "obj_weapon_cache");
 		if (ent == -1)
 		{
 			g_objFailed++;
@@ -1262,7 +1262,7 @@ static void MoveObjectives(bool verbose = true)
 		cpWant = g_objOrigin[i];
 		cpWant[2] += g_objCpOffset[i];
 		int cp = FindObjectiveEntity(cpName, g_objHasCpFrom[i], g_objCpFrom[i],
-			cpWant, "control point");
+			cpWant, "control point", "point_controlpoint");
 		if (cp == -1)
 		{
 			g_objFailed++;
@@ -1326,11 +1326,22 @@ static void MoveObjectives(bool verbose = true)
  * which is what the plugin did before the hint existed. A name that answers
  * more than once is logged whichever way it resolves: it is the kind of thing
  * that is invisible until a marker is 1,696 u from its cache.
+ *
+ * **Class before distance.** A map can give the cache and its marker one name
+ * and one coordinate - baghdad_remastered's cachepoint7 is an obj_weapon_cache
+ * and a point_controlpoint both at (-2377 -2410 -199) - and then distance is a
+ * tie that entity order breaks. The cache lookup took the marker, so the marker
+ * went to the new rung and the cache stayed on the stock one. So a candidate
+ * of the class the caller wants beats any other, and distance only chooses
+ * among equals. Another class is still taken when nothing of `wantClass`
+ * answers: a marker carried by its cache is found as the cache.
  */
 static int FindObjectiveEntity(const char[] name, bool hasFrom,
-	const float from[3], const float to[3], const char[] what)
+	const float from[3], const float to[3], const char[] what,
+	const char[] wantClass)
 {
 	int best = -1, matches = 0;
+	bool bestWanted = false;
 	float bestScore = 0.0;
 	int ent = -1;
 	while ((ent = FindEntityByClassname(ent, "*")) != -1)
@@ -1352,19 +1363,25 @@ static int FindObjectiveEntity(const char[] name, bool hasFrom,
 			if (moved < score)
 				score = moved;
 		}
-		if (best == -1 || score < bestScore)
+		char cls[64];
+		GetEntityClassname(ent, cls, sizeof(cls));
+		bool wanted = StrEqual(cls, wantClass, false);
+		if (best == -1 || (wanted && !bestWanted)
+			|| (wanted == bestWanted && score < bestScore))
 		{
 			best = ent;
+			bestWanted = wanted;
 			bestScore = score;
 		}
-		if (!hasFrom)
+		if (!hasFrom && wanted)
 			break;
 	}
 
 	if (matches > 1)
 		LogMessage("[layout] %s '%s': %d entities answer to that name; took ent %d "
-			... "at %.0f u from the coordinate the preset was measured at",
-			what, name, matches, best, bestScore);
+			... "(%s) at %.0f u from the coordinate the preset was measured at",
+			what, name, matches, best, bestWanted ? wantClass : "another class",
+			bestScore);
 	return best;
 }
 
