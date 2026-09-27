@@ -249,9 +249,14 @@ gates=()
 [[ -n "${MM_MIN_ADVANCE:-}" ]] && gates+=(--min-advance "$MM_MIN_ADVANCE")
 [[ -n "${MM_MIN_SEPARATION:-}" ]] && gates+=(--min-separation "$MM_MIN_SEPARATION")
 maps=()
+# Maps are independent and each is one single-threaded Python process, so they
+# run side by side: a corpus run was 49 minutes on one core of twelve.
+njobs="${MM_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --all) force_all=1; shift ;;
+    -j)    njobs="$2"; shift 2 ;;
+    -j*)   njobs="${1#-j}"; shift ;;
     *)     maps+=("$1"); shift ;;
   esac
 done
@@ -283,17 +288,17 @@ run_map() {  # run_map <what> <cmd...>
   return "$rc"
 }
 
-made=0 skipped=0 failed=0
-declare -a failures=()
-for map in "${maps[@]}"; do
+# One map, start to finish, in its own process: its output goes to a log and
+# its outcome - made, skipped or failed - to a status file, because a job run
+# in the background cannot touch the counters of the shell that started it.
+one_map() {  # one_map <map>
+  local map="$1" kind="" tmp cfg json
   # No cpsetup means no objective chain, and every layout here is a
   # permutation of one. Ask cheaply, before doing any work.
   if [[ ! -f "$root/game/insurgency/maps/$map.txt" ]]; then
-    skipped=$((skipped + 1))
-    continue
+    echo skipped > "$status/$map"; return
   fi
 
-  kind=""
   if [[ $force_all -eq 0 ]]; then
     tmp="$(mktemp)"
     if "$py" -m navlayout places "$map" --json "$tmp" >/dev/null 2>&1; then
@@ -309,7 +314,7 @@ for map in "${maps[@]}"; do
       echo "== $map: small - the whole family, rotated"
       run_map permute "$py" -m navlayout permute "$map" --all "${gates[@]}" \
         --cfg "$cfg" --json "$json" | tail -3 \
-        || { failed=$((failed + 1)); failures+=("$map"); continue; }
+        || { echo failed > "$status/$map"; return; }
       ;;
     linear|segmented)
       # A corridor licenses the reversal and the reversal is one walk, so a
@@ -336,7 +341,7 @@ for map in "${maps[@]}"; do
         echo "   $map: the reversal is refused - asking the family instead"
         run_map permute "$py" -m navlayout permute "$map" --all "${gates[@]}" \
           --cfg "$cfg" --json "$json" | tail -3 \
-          || { failed=$((failed + 1)); failures+=("$map"); continue; }
+          || { echo failed > "$status/$map"; return; }
       fi
       ;;
     "")
@@ -344,9 +349,9 @@ for map in "${maps[@]}"; do
         echo "== $map: the whole family, asked for"
         run_map permute "$py" -m navlayout permute "$map" --all "${gates[@]}" \
           --cfg "$cfg" --json "$json" | tail -3 \
-        || { failed=$((failed + 1)); failures+=("$map"); continue; }
+        || { echo failed > "$status/$map"; return; }
       else
-        skipped=$((skipped + 1)); continue
+        echo skipped > "$status/$map"; return
       fi
       ;;
     open)
@@ -357,13 +362,44 @@ for map in "${maps[@]}"; do
       echo "== $map: open - the whole family, minus any walk that pays for the wrap"
       run_map permute "$py" -m navlayout permute "$map" --all "${gates[@]}" \
         --cfg "$cfg" --json "$json" | tail -3 \
-        || { failed=$((failed + 1)); failures+=("$map"); continue; }
+        || { echo failed > "$status/$map"; return; }
       ;;
     *)
-      skipped=$((skipped + 1)); continue
+      echo skipped > "$status/$map"; return
       ;;
   esac
-  made=$((made + 1))
+  echo made > "$status/$map"
+}
+
+status="$(mktemp -d)"
+logs="$status/logs"
+mkdir -p "$logs"
+trap 'rm -rf "$status"' EXIT
+
+# Biggest survey first: the slowest map (gioconda_eron_garbage, ~2 minutes)
+# should not be the last one started.
+mapfile -t order < <(for map in "${maps[@]}"; do
+  printf '%s %s\n' "$(stat -c %s "$root/surveys/$map.json" 2>/dev/null || echo 0)" "$map"
+done | sort -rn | cut -d' ' -f2)
+
+echo "${#order[@]} map(s), $njobs at a time"
+for map in "${order[@]}"; do
+  while (( $(jobs -rp | wc -l) >= njobs )); do wait -n || true; done
+  one_map "$map" > "$logs/$map" 2>&1 &
+done
+wait || true
+
+# The logs in the order the maps were asked for, so a run reads the same
+# however the jobs happened to finish.
+made=0 skipped=0 failed=0
+declare -a failures=()
+for map in "${maps[@]}"; do
+  [[ -s "$logs/$map" ]] && cat "$logs/$map"
+  case "$(cat "$status/$map" 2>/dev/null || echo failed)" in
+    made)    made=$((made + 1)) ;;
+    skipped) skipped=$((skipped + 1)) ;;
+    *)       failed=$((failed + 1)); failures+=("$map") ;;
+  esac
 done
 
 echo
