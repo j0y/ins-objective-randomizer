@@ -1027,9 +1027,11 @@ def layout_score(lay: "Layout") -> float:
     det = lay.worst_detour
     det = 6.0 if (np.isnan(det) or not np.isfinite(det)) else det
     stock = lay.stock_max
+    # Not where the players spawn in one place all round: the advance is then a
+    # walk nobody takes (see the gate in `_layout`).
     ratio = (lay.worst_advance / stock
              if np.isfinite(lay.worst_advance) and np.isfinite(stock) and stock > 0
-             else 1.0)
+             and not lay.one_spawn else 1.0)
     gap = lay.min_advance if np.isfinite(lay.min_advance) else GATE_MIN_ADVANCE
     sep = lay.min_separation if np.isfinite(lay.min_separation) else GATE_MIN_SEPARATION
     n = max(len(lay.stages), 1)
@@ -1063,8 +1065,16 @@ def rank(layouts: list["Layout"], within: float | None = KEEP_WITHIN,
         return stock
     if within is not None or good is not None:
         best = layout_score(ranked[0])
+        # ...and never drops a round as good as the one the map ships. The
+        # gates already refuse a walk only for being worse than the map, never
+        # for being as bad as it is; the band was undoing that on the maps with
+        # one outstanding walk. gioconda_eron_agroprom's best scores 3.92, and
+        # twelve walks at 5.03-5.04 against the shipped round's 5.03 were
+        # dropped as poor for the map.
+        own = [layout_score(l) * (1 + GATE_TIE) for l in stock]
         bar = max(best * within if within is not None else 0.0,
-                  good if good is not None else 0.0)
+                  good if good is not None else 0.0,
+                  *own)
         ranked = [l for l in ranked if layout_score(l) <= bar] or ranked[:1]
     if keep is not None:
         ranked = ranked[:keep]
@@ -1225,6 +1235,7 @@ class Layout:
     advances: list[dict] = field(default_factory=list)
     stock_advances: list[float] = field(default_factory=list)
     metrics: dict = field(default_factory=dict)   # plan_metrics of this walk
+    one_spawn: bool = False            # the players spawn in one place all round
     stock_metrics: dict = field(default_factory=dict)
     contested: int = 0                 # points two stages' zones both hold
     unclaimed: int = 0                 # points inside no stage zone at all
@@ -2319,6 +2330,21 @@ def _layout(
             + (" ..." if len(crossed) > 4 else "")
         )
     worst, stock_worst = rev.worst_advance, rev.stock_max
+    # An advance is the walk from the objective just taken to the next, which
+    # is the walk a round asks for only where the players respawn on what they
+    # took. The gioconda set gives the players one spawn, at the start, for
+    # every stage - garbage's sixteen, kordon's twelve - and walking the map
+    # from it all round is how those maps play as shipped. There the gate
+    # measures a walk nobody takes, and cost garbage 16 of its 17 layouts. The
+    # advance is still reported; it just does not refuse.
+    one_spawn = sum(1 for z in dict.fromkeys(setup.zones[:n])
+                    if survey.points_in_zone(z, setup.attacking_team)) <= 1
+    rev.one_spawn = one_spawn
+    if one_spawn and max_advance is not None:
+        rev.warnings.append(
+            "the players spawn in one place for the whole round on this map, so "
+            "the stage advance is reported and not gated")
+        max_advance = None
     if np.isfinite(worst) and np.isfinite(stock_worst) and stock_worst > 0:
         ratio = worst / stock_worst
         if max_advance is not None and ratio > max_advance * (1 + GATE_TIE):
