@@ -95,6 +95,9 @@ class Survey:
     # it: the exporter writes what the engine's entity list gives it, and this
     # is a keyvalue in the lump. Empty where the .bsp was not there to read.
     capture_links: dict[str, str] | None = None
+    # `points_in_zone` answers, keyed with the entity count so a caller that
+    # appends entities after load is never handed a stale list.
+    _zone_points: dict = field(default_factory=dict, repr=False, compare=False)
 
     # ── loading ──────────────────────────────────────────────────────
 
@@ -226,20 +229,26 @@ class Survey:
         inside it, and why a spawn zone's *origin* - the centre of a brush that
         may be a 1882x2050 slab - is a poor stand-in for where players appear.
         """
+        key = (name, team, len(self.entities))
+        hit = self._zone_points.get(key)
+        if hit is None:
+            hit = self._zone_points[key] = self._points_in_zone(name, team)
+        return list(hit)
+
+    def _points_in_zone(self, name: str, team: int) -> list[Entity]:
         boxes = [
             box
             for z in self.spawn_zone(name, team)
             if (box := self.world_box(z)) is not None
         ]
-        if not boxes:
+        pts = self.spawn_points(team)
+        if not boxes or not pts:
             return []
-        out = []
-        for p in self.spawn_points(team):
-            for lo, hi in boxes:
-                if np.all(p.origin >= lo) and np.all(p.origin <= hi):
-                    out.append(p)
-                    break
-        return out
+        at = np.array([p.origin for p in pts])
+        m = np.zeros(len(pts), dtype=bool)
+        for lo, hi in boxes:
+            m |= np.all((at >= lo) & (at <= hi), axis=1)
+        return [p for p, inside in zip(pts, m) if inside]
 
     def area_of(self, ent: Entity) -> int | None:
         """The area an entity stands in.

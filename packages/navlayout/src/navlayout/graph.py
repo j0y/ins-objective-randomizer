@@ -14,7 +14,7 @@ by name.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -46,6 +46,10 @@ class NavGraph:
     blocked: np.ndarray          # (n,) bool
     indoor: np.ndarray           # (n,) bool
     breadth: np.ndarray          # (n,) narrow dimension of each area
+    # Distance fields already computed, by direction and source set. A layout
+    # asks for the same few - each rung, each cluster's points - dozens of times
+    # over, and a family builds a hundred layouts on one graph.
+    _memo: dict = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
     def build(cls, survey: Survey) -> "NavGraph":
@@ -104,8 +108,7 @@ class NavGraph:
         src = [sources] if isinstance(sources, int) else list(sources)
         if not src:
             return np.full(self.n, INF)
-        d = dijkstra(self.adj, directed=True, indices=src)
-        return np.atleast_2d(d).min(axis=0)
+        return self._field("from", src)
 
     def distances_to(self, targets: int | list[int]) -> np.ndarray:
         """Shortest path length from every area *to* `targets`, `inf` if none.
@@ -118,8 +121,25 @@ class NavGraph:
         dst = [targets] if isinstance(targets, int) else list(targets)
         if not dst:
             return np.full(self.n, INF)
-        d = dijkstra(self.adj.T.tocsr(), directed=True, indices=dst)
-        return np.atleast_2d(d).min(axis=0)
+        return self._field("to", dst)
+
+    def _field(self, way: str, ends: list[int]) -> np.ndarray:
+        """One multi-source search, not one per source and a minimum over them:
+        `min_only` is the same shortest distance to the nearest of `ends`, at
+        the cost of a single Dijkstra. A copy, so a caller cannot write into
+        the memo."""
+        key = (way, frozenset(int(e) for e in ends))
+        d = self._memo.get(key)
+        if d is None:
+            if way == "to":
+                if "rev" not in self._memo:
+                    self._memo["rev"] = self.adj.T.tocsr()
+                g = self._memo["rev"]
+            else:
+                g = self.adj
+            d = dijkstra(g, directed=True, indices=sorted(key[1]), min_only=True)
+            self._memo[key] = d
+        return d.copy()
 
     def path(self, source: int, target: int) -> list[int]:
         """One shortest path, as area indices. Empty when unreachable."""

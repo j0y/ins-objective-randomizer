@@ -83,6 +83,7 @@ because those are the engine's answers, not opinions.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -1488,7 +1489,13 @@ def _boxes(vols: list[Entity], delta: np.ndarray) -> list[tuple[np.ndarray, np.n
 
 
 def _inside(p: np.ndarray, boxes: list[tuple[np.ndarray, np.ndarray]]) -> bool:
-    return any(bool(np.all(p >= lo) and np.all(p <= hi)) for lo, hi in boxes)
+    # Plain floats: asked hundreds of thousands of times a family, and two
+    # `np.all` over three elements cost more than the comparisons.
+    x, y, z = float(p[0]), float(p[1]), float(p[2])
+    for lo, hi in boxes:
+        if (lo[0] <= x <= hi[0]) and (lo[1] <= y <= hi[1]) and (lo[2] <= z <= hi[2]):
+            return True
+    return False
 
 
 def _inside_mask(pts: np.ndarray, boxes: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
@@ -1536,15 +1543,14 @@ def _zone_split(survey: Survey, name: str, team: int) -> tuple[list[Entity], lis
     first list and nothing changes.
     """
     vols = survey.spawn_zone(name, team)
-    pts = [q.origin for q in survey.spawn_points(team)]
+    pts = np.array([q.origin for q in survey.spawn_points(team)]).reshape(-1, 3)
     held, pads = [], []
     for v in vols:
         box = Survey.world_box(v)
         if box is None:
             held.append(v)
             continue
-        lo, hi = box
-        if any(bool(np.all(q >= lo) and np.all(q <= hi)) for q in pts):
+        if _inside_mask(pts, [box]).any():
             held.append(v)
         else:
             pads.append(v)
@@ -1648,9 +1654,11 @@ def _usable(vols: list[Entity], delta: np.ndarray, authored: list[np.ndarray],
     keep = [a for a, m, ok in zip(authored, inside_auth, authored_ok) if m and ok]
     n_authored = len(keep)
 
+    # Inserted in the order the loop always did, so the set - and the stable
+    # sort's tie-breaks below - come out as they did.
     pool: set[int] = set()
     for lo, hi in boxes:
-        pool.update(int(i) for i in snap.overlapping(lo, hi))
+        pool.update(snap.overlapping(lo, hi).tolist())
     # Nearest the precedent first, so a pool that runs short is spent beside the
     # authored cluster rather than in the far corner of the volume. With no
     # authored coordinate inside the box at all there is no cluster to sit
@@ -1768,9 +1776,24 @@ def place_zone(vols: list[Entity], src_at: np.ndarray, authored: list[np.ndarray
 
     best = (home, [], 0, FILL_SEPARATIONS[0], 0)
     best_key = None
+    # A family builds a hundred layouts from the same rungs, and a layout the
+    # gates refuse is built again (`layout`), so the same volume is tried at the
+    # same move against the same coordinates over and over - 79% of the calls
+    # on tell_open_coop. The answer is a function of exactly these inputs.
+    base = hashlib.blake2b(digest_size=16)
+    base.update(repr((tuple(id(v) for v in vols), need)).encode())
+    base.update(np.asarray(authored, dtype=float).tobytes())
+    base.update(b"-" if allowed is None else np.asarray(allowed).tobytes())
+    base.update(np.asarray(authored_ok).tobytes())
     for d in cands:
-        coords, n_auth, sep = _usable(vols, d, authored, snap, graph, need, allowed,
-                                      authored_ok)
+        key = base.copy()
+        key.update(np.asarray(d, dtype=float).tobytes())
+        key = ("usable", key.digest())
+        hit = graph._memo.get(key)
+        if hit is None:
+            hit = graph._memo[key] = _usable(vols, d, authored, snap, graph, need,
+                                             allowed, authored_ok)
+        coords, n_auth, sep = list(hit[0]), hit[1], hit[2]
         leaks = 0
         if len(avoid) or avoid_boxes:
             leaks = int(_inside_mask(avoid_pts, _boxes(vols, d)).sum())

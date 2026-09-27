@@ -86,6 +86,7 @@ class Snapper:
         self.survey = survey
         self.have_footprints = survey.corner_offsets
         self.center = survey.centers()
+        self._snaps: dict = {}
         if self.have_footprints:
             self.nw = np.array([a.nw for a in survey.areas])
             self.se = np.array([a.se for a in survey.areas])
@@ -127,7 +128,16 @@ class Snapper:
         """
         if not self.have_footprints:
             return fallback
+        # The same points are snapped over and over - a zone's authored
+        # coordinates once per candidate placement - and the answer is a
+        # function of the point and the fallback alone.
+        key = (float(point[0]), float(point[1]), float(point[2]), fallback)
+        hit = self._snaps.get(key, self)
+        if hit is self:
+            hit = self._snaps[key] = self._snap(point, fallback)
+        return hit
 
+    def _snap(self, point: np.ndarray, fallback: int | None) -> int | None:
         cand = self.covering(point)
         if cand.size:
             dz = self.center[cand, 2] - point[2]
