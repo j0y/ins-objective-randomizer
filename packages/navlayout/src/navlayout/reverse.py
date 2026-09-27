@@ -3384,13 +3384,17 @@ def _layout(
         P = np.array([o for t, o in points_now if t == atk])
         for j in range(1, n + 1):
             c, zn = attackers[j], setup.zones[j - 1]
-            if (not c["live"] or c["mode"] != "move" or not len(P)
-                    or not survey.points_in_zone(zn, atk)):
+            if not c["live"] or not len(P) or not survey.points_in_zone(zn, atk):
                 continue
             now = [(lo, hi) for z, t, lo, hi in zones_now if z == zn and t == atk]
             if now and _inside_mask(P, now).any():
                 continue
-            home = _boxes(c["vols"], np.zeros(3))
+            # The volume this stage stands in, whichever way it got it: a mover's,
+            # a borrower's - whose points a mover carried off - or its own. Its
+            # rule becomes a move, keeping whatever rename it made; pads stay.
+            took = c.get("took", c["name"]) if c["mode"] == "move" else c["from"]
+            vols = _moving_volumes(survey, took, atk)
+            home = _boxes(vols, np.zeros(3))
             if not home:
                 continue
             mid = np.mean([(lo + hi) / 2.0 for lo, hi in home], axis=0)
@@ -3400,7 +3404,7 @@ def _layout(
             best = None
             for q in P[np.argsort(np.linalg.norm(P - at, axis=1))][:64]:
                 d = q - mid
-                boxes = _boxes(c["vols"], d)
+                boxes = _boxes(vols, d)
                 if _overlaps(boxes, obj_box[j]):
                     continue
                 cover = _inside_mask(P, boxes)
@@ -3414,9 +3418,8 @@ def _layout(
             if best is None:
                 continue
             _key, d, boxes, k, far = best
-            took = c.get("took", c["name"])
             rev.moves = [m for m in rev.moves if not (
-                (m.cls == "ins_spawnzone" and m.note.startswith(f"stage {j} attackers -> rung "))
+                (m.cls == "ins_spawnzone" and m.note.startswith(f"stage {j} attackers "))
                 or (m.cls == "ins_spawnpoint" and m.note.startswith(f"stage {j} attacker -> rung ")))]
             moves, _pads = _zone_moves(
                 survey, took, atk, offset=d, rename="" if took == zn else zn,

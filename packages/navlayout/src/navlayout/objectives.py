@@ -297,15 +297,19 @@ def resolve(survey: Survey, chain: list[str],
             # not: a brush centre is a point in mid-air, and on cap3 the only
             # footprint covering it is the floor 400 u above.
             #
-            # Nearest the box's centre, not its origin key: a brush's origin
-            # need not be anywhere near its geometry (`_centroid` in
-            # reverse.py). tell_open_coop's cz_k keeps its origin 495 u past
-            # the box's north face, so its floor was the area on that face, and
-            # a layout that stood the floor on another rung hung the whole box
-            # off to one side of it - "the capture area is small and only in
-            # the corner" (enter13_fwd, cp_k on cache_g's ground).
+            # Measured from the origin key where that key is inside the box,
+            # which is where the author put it on 1,028 of the corpus's 1,085
+            # objectives. Where it is outside - 57 of them, on 29 maps, all six
+            # of bombshelter's - the box's centre across the floor stands in
+            # for it, at the key's height: tell_open_coop's cz_k keeps its origin
+            # 495 u past the box's north face, so its floor was the area on
+            # that face, and a layout that stood the floor on another rung hung
+            # the whole box off to one side of it - "the capture area is small
+            # and only in the corner" (enter13_fwd, cp_k on cache_g's ground).
+            mid = anchor.origin.copy()
             box = Survey.world_box(anchor)
-            mid = (box[0] + box[1]) / 2.0 if box is not None else anchor.origin
+            if box is not None and not (np.all(mid >= box[0]) and np.all(mid <= box[1])):
+                mid[:2] = (box[0][:2] + box[1][:2]) / 2.0
             centers = snapper.center[areas]
             area = int(areas[int(np.linalg.norm(centers - mid, axis=1).argmin())])
         else:
