@@ -1388,8 +1388,14 @@ def build_rungs(survey: Survey, setup: CpSetup, objs: list[Objective],
         obj = objs[k - 1] if k >= 1 else None
         def_zone = setup.zone_for(k) or "" if k >= 1 else ""
         atk_zone = setup.zone_for(k + 1) or "" if k + 1 <= n else ""
-        def_at = _centroid(survey.spawn_zone(def_zone, dfn)) if def_zone else None
-        atk_at = _centroid(survey.spawn_zone(atk_zone, atk)) if atk_zone else None
+        # The volumes players spawn in, not the pads. gioconda_eron_garbage's
+        # security has one zone, `spawnzone1`: the insertion with all 25 of its
+        # points and an empty pad 22 ku away by cp8, and averaging the two put
+        # rung 0 - the attacker entry, and so the ground any walk fights its
+        # entry stage on - on a floor in the middle of the map that neither of
+        # them is near. See `_zone_split`.
+        def_at = _centroid(_spawning(survey, def_zone, dfn)) if def_zone else None
+        atk_at = _centroid(_spawning(survey, atk_zone, atk)) if atk_zone else None
 
         if obj is not None:
             floor = _objective_floor(obj, snap, graph)
@@ -1543,6 +1549,13 @@ def _zone_split(survey: Survey, name: str, team: int) -> tuple[list[Entity], lis
         else:
             pads.append(v)
     return held, pads
+
+
+def _spawning(survey: Survey, name: str, team: int) -> list[Entity]:
+    """A zone's volumes that hold points, or all of them where none do - a zone
+    with no point anywhere is still where the map put it."""
+    held, pads = _zone_split(survey, name, team)
+    return held or pads
 
 
 def _zone_moves(survey: Survey, name: str, team: int, **kw) -> tuple[list[Move], list[Entity]]:
@@ -2469,7 +2482,20 @@ def _layout(
             # and the round can reach it.
             at = o.anchor.origin + delta
             moved = float(np.linalg.norm(delta)) > 1.0
-            if moved:
+            home = dest.objective
+            if moved and home is not None and home.kind == "cache":
+                # A cache arriving where the map already stood one takes that
+                # one's spot: the mapper put a cache there and the engine has
+                # spawned it there every round, which is more than the mesh can
+                # say. gioconda_eron_garbage's cache_d stands 208 u over the only
+                # area under it - the tunnel below, the roof it stands on has no
+                # mesh - so a cache stood on that rung's floor went into the
+                # tunnel, and cache_d carried its 208 u onto cache_c's rung,
+                # whose tunnel has no usable area near it, and stood inside the
+                # ceiling (`enter2_rev`).
+                at = home.anchor.origin.copy()
+                entry["cache_resited"] = True
+            elif moved:
                 stand = _cache_stand(dest.floor, snap, graph)
                 if stand is not None:
                     # The map's own lift for *this* cache, which is a rounding
@@ -2479,11 +2505,16 @@ def _layout(
                         [0.0, 0.0, lift if abs(lift) <= STOREY else 0.0])
                     entry["cache_resited"] = True
                 else:
+                    # The rung's floor, without this cache's own lift: that is a
+                    # fact about the ground it came from, and carried here it
+                    # can put the cache in a ceiling.
+                    at = dest.floor.copy()
+                    entry["cache_resited"] = True
                     rev.warnings.append(
                         f"{o.name} is a cache moving to rung {dest.index} and "
                         f"there is no floor the player hull fits on within "
-                        f"{CACHE_STAND:.0f} u of it, so it is left where the "
-                        "translation dropped it - which may be off the mesh"
+                        f"{CACHE_STAND:.0f} u of it, so it stands on the rung's "
+                        "own floor, where the hull may not fit"
                     )
             rev.objectives.append(ObjectiveMove(
                 name=o.anchor.target,
@@ -2986,6 +3017,7 @@ def _layout(
                    for b in _boxes(c["borrowed"], np.zeros(3))]
                for t in (atk, dfn)}
     taken: set[int] = set()
+    moved_off: set[int] = set()
 
     def _free(q: Entity, team: int) -> bool:
         return not guard or (id(q) not in taken and not _inside(q.origin, held_by[team]))
@@ -3006,9 +3038,19 @@ def _layout(
                              and _free(q, team)])
             if not vols or not src or not c["authored"]:
                 continue
+            # A volume whose points another mover has already carried off, or
+            # a borrower still stands on, arrives empty: the applier gives each
+            # point to its first matching rule. dead_air's `spawnzone1` and
+            # `spawnzone2` are one box over one set of 14 points, and a reversal
+            # whose stage 12 took `spawnzone2` after stage 1 had moved
+            # `spawnzone1` gave stage 12's players no spawn point at all. The
+            # re-sited layouts refuse those outright (`_free`); every layout
+            # prefers a volume that is its own.
+            shared = sum(1 for q in src if id(q) in moved_off
+                         or _inside(q.origin, held_by[team]))
             trial = dict(c, vols=vols, src=src)
             put = _put(trial)
-            key = (-abs(len(src) - want), put["n_auth"], len(put["cand"]))
+            key = (-shared, -abs(len(src) - want), put["n_auth"], len(put["cand"]))
             if best is None or key > best[0]:
                 best = (key, zn, vols, src, put)
         if best is None:
@@ -3020,6 +3062,7 @@ def _layout(
                if (zn != c["name"] or owner.get(id(q)) == c["j"]) and _free(q, team)]
         if guard:
             taken.update(id(q) for q in raw)
+        moved_off.update(id(q) for q in raw)
         rev.coincident += len(raw) - len(src)
         c.update(vols=vols, src=src, put=put, live=True, took=zn)
         c["stage"].update(points=len(src), volumes=len(vols),
@@ -3325,6 +3368,68 @@ def _layout(
     # answers to the name. So the layout's own rules are applied to the survey
     # as the applier applies them (`as_applied`), and a stage's points are
     # whatever of its team stands in a volume under its name.
+    # ── players with no point of their own stand on another stage's ──
+    # Two attacker stages are never live together - the gamemode enables one
+    # stage's zones and disables the last's - and a point binds to every volume
+    # that holds it, so a volume laid over points another attacker stage
+    # already stands on spawns this stage there without taking them from it.
+    # That is the answer where the map has fewer sets of attacker points than
+    # the walk needs: dead_air's `spawnzone1` and `spawnzone2` are one box over
+    # one set of 14, so its reversal, which moves both ends, leaves stage 12's
+    # mover a volume whose points stage 1 has already carried off. The volume
+    # goes over the attacker points nearest the objective the stage has just
+    # taken, clear of the one it is attacking.
+    if plan.order != stock_plan(n).order:
+        zones_now, points_now = as_applied(survey, rev.moves)
+        P = np.array([o for t, o in points_now if t == atk])
+        for j in range(1, n + 1):
+            c, zn = attackers[j], setup.zones[j - 1]
+            if (not c["live"] or c["mode"] != "move" or not len(P)
+                    or not survey.points_in_zone(zn, atk)):
+                continue
+            now = [(lo, hi) for z, t, lo, hi in zones_now if z == zn and t == atk]
+            if now and _inside_mask(P, now).any():
+                continue
+            home = _boxes(c["vols"], np.zeros(3))
+            if not home:
+                continue
+            mid = np.mean([(lo + hi) / 2.0 for lo, hi in home], axis=0)
+            prev = plan.at(j - 1)
+            at = rungs[prev].floor
+            want = min(MIN_POINTS, len(c["src"]))
+            best = None
+            for q in P[np.argsort(np.linalg.norm(P - at, axis=1))][:64]:
+                d = q - mid
+                boxes = _boxes(c["vols"], d)
+                if _overlaps(boxes, obj_box[j]):
+                    continue
+                cover = _inside_mask(P, boxes)
+                k = int(cover.sum())
+                if not k:
+                    continue
+                far = float(np.linalg.norm(P[cover].mean(axis=0) - at))
+                key = (k >= want, -far, k)
+                if best is None or key > best[0]:
+                    best = (key, d, boxes, k, far)
+            if best is None:
+                continue
+            _key, d, boxes, k, far = best
+            took = c.get("took", c["name"])
+            rev.moves = [m for m in rev.moves if not (
+                (m.cls == "ins_spawnzone" and m.note.startswith(f"stage {j} attackers -> rung "))
+                or (m.cls == "ins_spawnpoint" and m.note.startswith(f"stage {j} attacker -> rung ")))]
+            moves, _pads = _zone_moves(
+                survey, took, atk, offset=d, rename="" if took == zn else zn,
+                note=f"stage {j} attackers -> rung {prev}, over another stage's points")
+            rev.moves.extend(moves)
+            c["put"]["boxes"] = boxes
+            c["stage"].update(bound=k, shares=True)
+            rev.warnings.append(
+                f"stage {j}'s attackers have no spawn point of their own - the "
+                f"map has fewer sets than the walk needs - so their volume is laid "
+                f"over {k} points another attacker stage stands on, {far:.0f} u "
+                f"from rung {prev}")
+
     zones_now, points_now = as_applied(survey, rev.moves)
     resited = any("clash_from" in c["stage"] or "kept_clear" in c["stage"]
                   for c in clusters)
@@ -3336,6 +3441,22 @@ def _layout(
             return []
         return [o for o, m in zip(pts, _inside_mask(np.asarray(pts), boxes)) if m]
 
+    # A re-site is a licence to move, and a mover can find no free volume and
+    # be left with none. The stage is then not where the re-site put it, and
+    # not where the permutation put it either: its zone name answers only to
+    # whatever the map left standing under it. On dead_air's reversal that was
+    # `spawnzone2`'s resupply pad on rung 1, holding the points stage 12's
+    # mover had just put there - so stage 2's players spawned 9 ku back, on
+    # ground the round had taken ten stages earlier, and the check below read
+    # it as a stage with players. Refused, so `layout` rebuilds it without the
+    # re-site.
+    for c in clusters:
+        if resited and not c["live"] and ("clash_from" in c["stage"]
+                                          or "kept_clear" in c["stage"]):
+            rev.warnings.append(
+                f"REFUSED: stage {c['j']}'s {c['role']}s were re-sited clear of "
+                f"the other team and no free volume was left to move them in")
+
     for j in range(1, n + 1):
         a, d = attackers[j], defenders[j]
         A, bots = _bound(setup.zones[j - 1], atk), _bound(setup.zones[j - 1], dfn)
@@ -3345,7 +3466,25 @@ def _layout(
             # Where this layout re-sited anything it is refused for it, and
             # `layout` rebuilds it without the re-sites - which is how it was
             # built before them, and is left to say whatever it says.
-            if resited:
+            #
+            # The players are refused for it on every walk. A bot with no point
+            # is spawned off the mesh; a player is put wherever the engine
+            # finds a point, and on dead_air's reversal that was 9 ku back on
+            # ground the round had taken ten stages before. Its attackers have
+            # 11 sets of points for 12 stages - `spawnzone1` and `spawnzone2`
+            # are one box - and the reversal moves both ends, so one stage has
+            # none whichever way the volumes are dealt. Where the shipped map
+            # itself gives the stage none (gioconda_eron_garbage's security
+            # has one zone for sixteen stages) it is the map's, not this
+            # layout's.
+            if (not A and plan.order != stock_plan(n).order
+                    and survey.points_in_zone(setup.zones[j - 1], atk)):
+                rev.warnings.append(
+                    f"REFUSED: stage {j}'s attackers bind no spawn point once "
+                    f"every rule is applied, where the shipped map gives them "
+                    f"{len(survey.points_in_zone(setup.zones[j - 1], atk))} - "
+                    f"the players would spawn wherever the engine finds one")
+            elif resited:
                 who = "attackers" if not A else "defenders"
                 rev.warnings.append(
                     f"REFUSED: stage {j}'s {who} bind no spawn point once every "

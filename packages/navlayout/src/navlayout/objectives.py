@@ -296,8 +296,18 @@ def resolve(survey: Survey, chain: list[str],
             # from inside it. Snapping the volume's *origin* independently does
             # not: a brush centre is a point in mid-air, and on cap3 the only
             # footprint covering it is the floor 400 u above.
+            #
+            # Nearest the box's centre, not its origin key: a brush's origin
+            # need not be anywhere near its geometry (`_centroid` in
+            # reverse.py). tell_open_coop's cz_k keeps its origin 495 u past
+            # the box's north face, so its floor was the area on that face, and
+            # a layout that stood the floor on another rung hung the whole box
+            # off to one side of it - "the capture area is small and only in
+            # the corner" (enter13_fwd, cp_k on cache_g's ground).
+            box = Survey.world_box(anchor)
+            mid = (box[0] + box[1]) / 2.0 if box is not None else anchor.origin
             centers = snapper.center[areas]
-            area = int(areas[int(np.linalg.norm(centers - anchor.origin, axis=1).argmin())])
+            area = int(areas[int(np.linalg.norm(centers - mid, axis=1).argmin())])
         else:
             area = snapper.snap(anchor.origin, fallback=anchor.area)
             areas = [area] if area is not None else []
