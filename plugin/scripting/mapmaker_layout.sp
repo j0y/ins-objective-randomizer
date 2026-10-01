@@ -148,6 +148,9 @@ static float g_objFrom[32][3];
 static float g_objCpFrom[32][3];
 static bool  g_objHasFrom[32];
 static bool  g_objHasCpFrom[32];
+// Which slot of the objective resource's position array is this objective's
+// marker, -1 until ResolveMarkerSlots has read it. See there.
+static int   g_objSlot[32];
 static int   g_objCount;
 
 // The edit rules, read out of the preset before the lump is walked. They are
@@ -1133,6 +1136,7 @@ static void CollectObjectives(KeyValues kv)
 		g_objHasFrom[g_objCount] = ParseFloats(fromStr, g_objFrom[g_objCount], 3);
 		kv.GetString("cp_from", fromStr, sizeof(fromStr), "");
 		g_objHasCpFrom[g_objCount] = ParseFloats(fromStr, g_objCpFrom[g_objCount], 3);
+		g_objSlot[g_objCount] = -1;
 		// The shipped convention: the control point marker sits +72 above the
 		// cache it belongs to.
 		g_objCpOffset[g_objCount] = kv.GetFloat("cp_offset", 72.0);
@@ -1160,7 +1164,71 @@ static void CollectObjectives(KeyValues kv)
  * is found by the coordinate the array still holds: the entry standing on the
  * marker's old position is the entry that describes that marker. Returns the
  * slot it wrote, -1 if it found nothing to write.
+ *
+ * This is the fallback, for a preset with no `cp_from`; ResolveMarkerSlots is
+ * the answer when there is one. Matching by coordinate cannot survive a
+ * permutation that sends one cache onto another's stock ground: whichever
+ * moves first writes the coordinate the other is about to look itself up by.
  */
+/**
+ * Read every objective's slot off the array while it still says what the
+ * stock map says, and keep it for the rest of the map.
+ *
+ * Slots are found by coordinate, and a coordinate stops naming one slot as
+ * soon as a permutation sends a cache onto another cache's stock ground.
+ * Measured on depot_checkpoint's enter9_fwd, 2026-10-01: cache_d goes where
+ * cache_g stood, so writing D's slot puts G's stock coordinate in it, and
+ * G's lookup then found D's slot first and overwrote it. Both slots ended on
+ * G's new ground and D vanished from the map screen. Read before anything is
+ * written, the stock coordinates are all distinct, and an index does not move.
+ *
+ * Runs at the top of every pass and only does work for an objective it has
+ * not resolved, so a slot read on the first pass of the map is the one used
+ * on every round after it, whatever the array holds by then.
+ */
+static void ResolveMarkerSlots()
+{
+	int res = FindEntityByClassname(-1, "ins_objective_resource");
+	if (res == -1)
+		return;
+	int n = GetEntProp(res, Prop_Send, "m_iNumControlPoints");
+	if (n <= 0 || n > MM_MAX_CONTROL_POINTS)
+		return;
+
+	bool claimed[MM_MAX_CONTROL_POINTS];
+	for (int i = 0; i < g_objCount; i++)
+		if (g_objSlot[i] >= 0)
+			claimed[g_objSlot[i]] = true;
+
+	float pos[3];
+	for (int i = 0; i < g_objCount; i++)
+	{
+		if (g_objSlot[i] >= 0 || !g_objHasCpFrom[i])
+			continue;
+		for (int k = 0; k < n; k++)
+		{
+			if (claimed[k])
+				continue;
+			GetEntPropVector(res, Prop_Send, "m_vCPPositions", pos, k);
+			if (GetVectorDistance(pos, g_objCpFrom[i]) <= MM_VERIFY_TOL)
+			{
+				g_objSlot[i] = k;
+				claimed[k] = true;
+				break;
+			}
+		}
+	}
+}
+
+static int WriteCPSlot(int slot, const float to[3])
+{
+	int res = FindEntityByClassname(-1, "ins_objective_resource");
+	if (res == -1)
+		return -1;
+	SetEntPropVector(res, Prop_Send, "m_vCPPositions", to, slot);
+	return slot;
+}
+
 static int UpdateCPMarker(const float from[3], const float to[3])
 {
 	int res = FindEntityByClassname(-1, "ins_objective_resource");
@@ -1187,66 +1255,31 @@ static int UpdateCPMarker(const float from[3], const float to[3])
 	return -1;
 }
 
+// Copies of one objective name a pass will move. Two is what the game makes;
+// the rest is headroom.
+#define MM_MAX_COPIES 8
+
 static void MoveObjectives(bool verbose = true)
 {
 	// Every pass re-answers the same question, so it starts from no failures
 	// rather than adding this pass's to the last one's.
 	g_objFailed = 0;
+	ResolveMarkerSlots();
 
+	int ents[MM_MAX_COPIES];
 	for (int i = 0; i < g_objCount; i++)
 	{
-		int ent = FindObjectiveEntity(g_objName[i], g_objHasFrom[i], g_objFrom[i],
-			g_objOrigin[i], "objective", "obj_weapon_cache");
-		if (ent == -1)
+		int n = FindObjectiveEntities(g_objName[i], g_objHasFrom[i], g_objFrom[i],
+			g_objOrigin[i], "objective", "obj_weapon_cache", ents, verbose);
+		if (n == 0)
 		{
 			g_objFailed++;
 			LogError("[layout] objective '%s': no entity by that name in the "
 				... "running map - preset may be stale", g_objName[i]);
 			continue;
 		}
-
-		// Where it was standing before this pass. On the first pass that is
-		// the .txt coordinate; on a later one it says whether the game put the
-		// cache back, which is the only way to tell a reset from a no-op.
-		float before[3];
-		bool hadBefore = GetEntityOrigin(ent, before);
-
-		TeleportEntity(ent, g_objOrigin[i], NULL_VECTOR, NULL_VECTOR);
-
-		// Read the position back rather than trust the call.
-		// CObjWeaponCache::Teleport is overridden - that override is the reason
-		// a cache can be moved at all, since it carries the cache's own trigger
-		// with it - and an override is exactly the kind of thing that can
-		// decline a move, clamp it, or move only half of itself.
-		float landed[3];
-		if (!GetEntityOrigin(ent, landed))
-		{
-			g_objFailed++;
-			LogError("[layout] objective '%s': ent %d has no origin to read back",
-				g_objName[i], ent);
-		}
-		else if (GetVectorDistance(landed, g_objOrigin[i]) > MM_VERIFY_TOL)
-		{
-			g_objFailed++;
-			LogError("[layout] objective '%s': ent %d asked for (%.0f %.0f %.0f), "
-				... "sits at (%.0f %.0f %.0f)", g_objName[i], ent,
-				g_objOrigin[i][0], g_objOrigin[i][1], g_objOrigin[i][2],
-				landed[0], landed[1], landed[2]);
-		}
-		else if (hadBefore && GetVectorDistance(before, landed) <= MM_VERIFY_TOL)
-		{
-			// Nothing to do. Said once per round, not once per pass.
-			if (verbose)
-				LogMessage("[layout] objective '%s': ent %d already at (%.0f %.0f %.0f)",
-					g_objName[i], ent, landed[0], landed[1], landed[2]);
-		}
-		else
-		{
-			LogMessage("[layout] objective '%s': ent %d moved to (%.0f %.0f %.0f) "
-				... "from (%.0f %.0f %.0f)", g_objName[i], ent,
-				landed[0], landed[1], landed[2],
-				before[0], before[1], before[2]);
-		}
+		for (int k = 0; k < n; k++)
+			MoveCache(i, ents[k], verbose);
 
 		// The marker follows its cache, by the map's own offset. Which entity
 		// answered to the name is logged because the name cannot be derived -
@@ -1261,59 +1294,174 @@ static void MoveObjectives(bool verbose = true)
 		float cpWant[3];
 		cpWant = g_objOrigin[i];
 		cpWant[2] += g_objCpOffset[i];
-		int cp = FindObjectiveEntity(cpName, g_objHasCpFrom[i], g_objCpFrom[i],
-			cpWant, "control point", "point_controlpoint");
-		if (cp == -1)
+		n = FindObjectiveEntities(cpName, g_objHasCpFrom[i], g_objCpFrom[i],
+			cpWant, "control point", "point_controlpoint", ents, verbose);
+		if (n == 0)
 		{
 			g_objFailed++;
 			LogError("[layout] objective '%s': control point '%s' not found - "
 				... "the marker stays where the stock map put it", g_objName[i], cpName);
 			continue;
 		}
+		for (int k = 0; k < n; k++)
+			MoveMarker(i, ents[k], cpName, cpWant, verbose);
+	}
+}
 
-		float cpPos[3], cpBefore[3];
-		cpPos = cpWant;
-		GetEntityOrigin(cp, cpBefore);
-		TeleportEntity(cp, cpPos, NULL_VECTOR, NULL_VECTOR);
+static void MoveCache(int i, int ent, bool verbose)
+{
+	// Where it was standing before this pass. On the first pass that is
+	// the .txt coordinate; on a later one it says whether the game put the
+	// cache back, which is the only way to tell a reset from a no-op.
+	float before[3];
+	bool hadBefore = GetEntityOrigin(ent, before);
 
-		char cpClass[64];
-		GetEntityClassname(cp, cpClass, sizeof(cpClass));
+	TeleportEntity(ent, g_objOrigin[i], NULL_VECTOR, NULL_VECTOR);
 
-		// The map screen is a separate answer from the world, and it is the one
-		// a player reads: the client draws every marker from the objective
-		// resource's networked array, not from this entity. So the array is
-		// written whether or not the entity took the move.
-		int slot = UpdateCPMarker(cpBefore, cpPos);
+	// Read the position back rather than trust the call.
+	// CObjWeaponCache::Teleport is overridden - that override is the reason
+	// a cache can be moved at all, since it carries the cache's own trigger
+	// with it - and an override is exactly the kind of thing that can
+	// decline a move, clamp it, or move only half of itself.
+	float landed[3];
+	if (!GetEntityOrigin(ent, landed))
+	{
+		g_objFailed++;
+		LogError("[layout] objective '%s': ent %d has no origin to read back",
+			g_objName[i], ent);
+	}
+	else if (GetVectorDistance(landed, g_objOrigin[i]) > MM_VERIFY_TOL)
+	{
+		g_objFailed++;
+		LogError("[layout] objective '%s': ent %d asked for (%.0f %.0f %.0f), "
+			... "sits at (%.0f %.0f %.0f)", g_objName[i], ent,
+			g_objOrigin[i][0], g_objOrigin[i][1], g_objOrigin[i][2],
+			landed[0], landed[1], landed[2]);
+	}
+	else if (hadBefore && GetVectorDistance(before, landed) <= MM_VERIFY_TOL)
+	{
+		// Nothing to do. Said once per round, not once per pass.
+		if (verbose)
+			LogMessage("[layout] objective '%s': ent %d already at (%.0f %.0f %.0f)",
+				g_objName[i], ent, landed[0], landed[1], landed[2]);
+	}
+	else
+	{
+		LogMessage("[layout] objective '%s': ent %d moved to (%.0f %.0f %.0f) "
+			... "from (%.0f %.0f %.0f)", g_objName[i], ent,
+			landed[0], landed[1], landed[2],
+			before[0], before[1], before[2]);
+	}
+}
 
-		float cpLanded[3];
-		if (!GetEntityOrigin(cp, cpLanded))
+static void MoveMarker(int i, int cp, const char[] cpName, const float cpWant[3],
+	bool verbose)
+{
+	float cpPos[3], cpBefore[3];
+	cpPos = cpWant;
+	GetEntityOrigin(cp, cpBefore);
+	TeleportEntity(cp, cpPos, NULL_VECTOR, NULL_VECTOR);
+
+	char cpClass[64];
+	GetEntityClassname(cp, cpClass, sizeof(cpClass));
+
+	// The map screen is a separate answer from the world, and it is the one
+	// a player reads: the client draws every marker from the objective
+	// resource's networked array, not from this entity. So the array is
+	// written whether or not the entity took the move.
+	int slot = (g_objSlot[i] >= 0) ? WriteCPSlot(g_objSlot[i], cpPos)
+		: UpdateCPMarker(cpBefore, cpPos);
+
+	float cpLanded[3];
+	if (!GetEntityOrigin(cp, cpLanded))
+	{
+		g_objFailed++;
+		LogError("[layout] objective '%s': control point '%s' (%s, ent %d) has "
+			... "no origin to read back", g_objName[i], cpName, cpClass, cp);
+	}
+	else if (GetVectorDistance(cpLanded, cpPos) > MM_VERIFY_TOL)
+	{
+		g_objFailed++;
+		// Where it ended up, not just that it is not where it was asked to
+		// be: a marker that is carried by its cache lands on the cache and
+		// needs no move at all, and one left behind lands on the stock
+		// coordinate. Those are different faults and the position is what
+		// tells them apart. The pass says whether a later one recovered it.
+		LogError("[layout] objective '%s': control point '%s' (%s, ent %d) asked "
+			... "for (%.0f %.0f %.0f), sits at (%.0f %.0f %.0f) - pass %d, "
+			... "minimap slot %d",
+			g_objName[i], cpName, cpClass, cp,
+			cpPos[0], cpPos[1], cpPos[2],
+			cpLanded[0], cpLanded[1], cpLanded[2], g_objPass, slot);
+	}
+	else if (verbose || GetVectorDistance(cpBefore, cpLanded) > MM_VERIFY_TOL)
+	{
+		LogMessage("[layout]   cp '%s' (%s, ent %d) moved to (%.0f %.0f %.0f), "
+			... "minimap slot %d", cpName, cpClass, cp,
+			cpLanded[0], cpLanded[1], cpLanded[2], slot);
+	}
+}
+
+/**
+ * Every entity of this name the preset means - which, once a round has
+ * started, is two.
+ *
+ * **The game spawns maps/<map>.txt's objectives again on a round restart
+ * without always removing the ones already there.** Measured on
+ * depot_checkpoint, 2026-10-01, stock and permuted alike: the load spawns
+ * one cache_b, and the restart that starts the first round leaves two, both
+ * solid, both visible, both full health, standing on the same .txt
+ * coordinate. On the stock map the pair is one crate to look at. Under a
+ * preset that moved only the first of them, the second stayed on the stock
+ * ground - and where a permutation sends one cache onto another's stock
+ * ground (enter9_fwd's cache_d onto cache_g's, drycanal_coop_old's
+ * enter5_rev cache_g onto cache_j's), the objective shared its ground with a
+ * second, differently turned crate of another name - and those are the two
+ * caches players reported as soaking up explosives. The overlap is measured;
+ * how it eats the damage is not, because a server with only bots never
+ * reaches a round in which a cache takes any.
+ *
+ * So every copy standing on either end of the move is taken: the stock
+ * coordinate, or the preset's own for one an earlier pass already moved. The
+ * pair lands together, as it stood on the stock map. A copy anywhere else is
+ * a different entity - congress_coop's BSP-baked marker 1,696 u from its .txt
+ * twin - and is left alone. With no `from` hint, or with nothing standing on
+ * either end, this is FindObjectiveEntity's single best answer.
+ */
+static int FindObjectiveEntities(const char[] name, bool hasFrom,
+	const float from[3], const float to[3], const char[] what,
+	const char[] wantClass, int ents[MM_MAX_COPIES], bool verbose)
+{
+	int n = 0;
+	if (hasFrom)
+	{
+		int ent = -1;
+		while ((ent = FindEntityByClassname(ent, wantClass)) != -1 && n < MM_MAX_COPIES)
 		{
-			g_objFailed++;
-			LogError("[layout] objective '%s': control point '%s' (%s, ent %d) has "
-				... "no origin to read back", g_objName[i], cpName, cpClass, cp);
-		}
-		else if (GetVectorDistance(cpLanded, cpPos) > MM_VERIFY_TOL)
-		{
-			g_objFailed++;
-			// Where it ended up, not just that it is not where it was asked to
-			// be: a marker that is carried by its cache lands on the cache and
-			// needs no move at all, and one left behind lands on the stock
-			// coordinate. Those are different faults and the position is what
-			// tells them apart. The pass says whether a later one recovered it.
-			LogError("[layout] objective '%s': control point '%s' (%s, ent %d) asked "
-				... "for (%.0f %.0f %.0f), sits at (%.0f %.0f %.0f) - pass %d, "
-				... "minimap slot %d",
-				g_objName[i], cpName, cpClass, cp,
-				cpPos[0], cpPos[1], cpPos[2],
-				cpLanded[0], cpLanded[1], cpLanded[2], g_objPass, slot);
-		}
-		else if (verbose || GetVectorDistance(cpBefore, cpLanded) > MM_VERIFY_TOL)
-		{
-			LogMessage("[layout]   cp '%s' (%s, ent %d) moved to (%.0f %.0f %.0f), "
-				... "minimap slot %d", cpName, cpClass, cp,
-				cpLanded[0], cpLanded[1], cpLanded[2], slot);
+			if (!HasEntProp(ent, Prop_Data, "m_iName"))
+				continue;
+			char nm[64];
+			GetEntPropString(ent, Prop_Data, "m_iName", nm, sizeof(nm));
+			if (!StrEqual(nm, name, false))
+				continue;
+			float here[3];
+			if (!GetEntityOrigin(ent, here))
+				continue;
+			if (GetVectorDistance(here, from) <= MM_VERIFY_TOL
+				|| GetVectorDistance(here, to) <= MM_VERIFY_TOL)
+				ents[n++] = ent;
 		}
 	}
+	if (n == 0)
+	{
+		int ent = FindObjectiveEntity(name, hasFrom, from, to, what, wantClass, verbose);
+		if (ent != -1)
+			ents[n++] = ent;
+	}
+	else if (n > 1 && verbose)
+		LogMessage("[layout] %s '%s': %d copies on its ground - moving all of them",
+			what, name, n);
+	return n;
 }
 
 /**
@@ -1338,7 +1486,7 @@ static void MoveObjectives(bool verbose = true)
  */
 static int FindObjectiveEntity(const char[] name, bool hasFrom,
 	const float from[3], const float to[3], const char[] what,
-	const char[] wantClass)
+	const char[] wantClass, bool verbose = true)
 {
 	int best = -1, matches = 0;
 	bool bestWanted = false;
@@ -1377,7 +1525,7 @@ static int FindObjectiveEntity(const char[] name, bool hasFrom,
 			break;
 	}
 
-	if (matches > 1)
+	if (matches > 1 && verbose)
 		LogMessage("[layout] %s '%s': %d entities answer to that name; took ent %d "
 			... "(%s) at %.0f u from the coordinate the preset was measured at",
 			what, name, matches, best, bestWanted ? wantClass : "another class",
